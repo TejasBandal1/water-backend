@@ -20,7 +20,8 @@ from app.services.container_balance_service import get_client_container_balance
 from app.services.audit_service import log_action
 from datetime import datetime
 from sqlalchemy.orm import joinedload
-
+from fastapi import Depends
+from fastapi.security import OAuth2PasswordRequestForm
 from app.schemas.user import UserResponse
 router = APIRouter(prefix="/admin", tags=["Admin Master"])
 
@@ -175,12 +176,18 @@ def view_client_balance(
 
 # ---------------- USERS ----------------
 
+from sqlalchemy.orm import joinedload
+
 @router.get("/users", response_model=list[UserResponse])
 def get_users(
     db: Session = Depends(get_db),
     user=Depends(require_role(["admin"]))
 ):
-    users = db.query(User).all()
+    users = (
+        db.query(User)
+        .options(joinedload(User.role))
+        .all()
+    )
 
     return [
         UserResponse(
@@ -192,7 +199,6 @@ def get_users(
         )
         for u in users
     ]
-
 @router.post("/users")
 def create_user_admin(
     user_data: UserCreate,

@@ -34,11 +34,17 @@ def register(user: UserCreate, db: Session = Depends(get_db)):
 
     return {"message": "User created successfully"}
 
-@router.post("/login")
-def login(user: UserLogin, db: Session = Depends(get_db)):
-    db_user = db.query(User).filter(User.email == user.email).first()
+from fastapi.security import OAuth2PasswordRequestForm
+from fastapi import Depends
 
-    if not db_user or not verify_password(user.password, db_user.hashed_password):
+@router.post("/login")
+def login(
+    form_data: OAuth2PasswordRequestForm = Depends(),
+    db: Session = Depends(get_db)
+):
+    db_user = db.query(User).filter(User.email == form_data.username).first()
+
+    if not db_user or not verify_password(form_data.password, db_user.hashed_password):
         raise HTTPException(status_code=401, detail="Invalid credentials")
 
     access_token = create_access_token(
@@ -48,4 +54,7 @@ def login(user: UserLogin, db: Session = Depends(get_db)):
         }
     )
 
-    return {"access_token": access_token, "token_type": "bearer"}
+    return {
+        "access_token": access_token,
+        "token_type": "bearer"
+    }
