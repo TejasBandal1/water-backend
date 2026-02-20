@@ -21,7 +21,7 @@ from app.services.audit_service import log_action
 from datetime import datetime
 from sqlalchemy.orm import joinedload
 
-
+from app.schemas.user import UserResponse
 router = APIRouter(prefix="/admin", tags=["Admin Master"])
 
 
@@ -175,13 +175,23 @@ def view_client_balance(
 
 # ---------------- USERS ----------------
 
-@router.get("/users")
+@router.get("/users", response_model=list[UserResponse])
 def get_users(
     db: Session = Depends(get_db),
     user=Depends(require_role(["admin"]))
 ):
-    return db.query(User).all()
+    users = db.query(User).all()
 
+    return [
+        UserResponse(
+            id=u.id,
+            name=u.name,
+            email=u.email,
+            role=u.role.name,
+            client_id=u.client_id
+        )
+        for u in users
+    ]
 
 @router.post("/users")
 def create_user_admin(
