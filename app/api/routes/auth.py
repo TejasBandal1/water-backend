@@ -48,11 +48,11 @@ def login(
         raise HTTPException(status_code=401, detail="Invalid credentials")
 
     access_token = create_access_token(
-        data={
-            "sub": db_user.email,
-            "role": db_user.role.name
-        }
-    )
+    data={
+        "sub": db_user.email,
+        "role": db_user.role.name.lower()   # 🔥 ADD THIS
+    }
+)
 
     return {
         "access_token": access_token,

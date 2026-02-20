@@ -194,7 +194,7 @@ def get_users(
             id=u.id,
             name=u.name,
             email=u.email,
-            role=u.role.name,
+            role=u.role.name.lower(),
             client_id=u.client_id
         )
         for u in users
