@@ -1,9 +1,29 @@
 from sqlalchemy.orm import Session
 from sqlalchemy import func
-from datetime import datetime
+from datetime import datetime, time
 from app.models.invoice import Invoice
 from app.models.trip_container import TripContainer
 from app.models.trip import Trip
+
+
+def _parse_from_date(date_value: str | None) -> datetime | None:
+    if not date_value:
+        return None
+
+    parsed = datetime.fromisoformat(date_value)
+    if "T" not in date_value:
+        return datetime.combine(parsed.date(), time.min)
+    return parsed
+
+
+def _parse_to_date(date_value: str | None) -> datetime | None:
+    if not date_value:
+        return None
+
+    parsed = datetime.fromisoformat(date_value)
+    if "T" not in date_value:
+        return datetime.combine(parsed.date(), time.max)
+    return parsed
 
 
 # =====================================================
@@ -11,6 +31,8 @@ from app.models.trip import Trip
 # =====================================================
 
 def revenue_per_client(db: Session, from_date: str | None, to_date: str | None):
+    from_dt = _parse_from_date(from_date)
+    to_dt = _parse_to_date(to_date)
 
     query = (
         db.query(
@@ -20,14 +42,14 @@ def revenue_per_client(db: Session, from_date: str | None, to_date: str | None):
         .filter(Invoice.status == "paid")
     )
 
-    if from_date:
+    if from_dt:
         query = query.filter(
-            Invoice.confirmed_at >= datetime.fromisoformat(from_date)
+            Invoice.confirmed_at >= from_dt
         )
 
-    if to_date:
+    if to_dt:
         query = query.filter(
-            Invoice.confirmed_at <= datetime.fromisoformat(to_date)
+            Invoice.confirmed_at <= to_dt
         )
 
     results = query.group_by(Invoice.client_id).all()
@@ -84,6 +106,8 @@ def monthly_revenue(
     from_date: str | None,
     to_date: str | None
 ):
+    from_dt = _parse_from_date(from_date)
+    to_dt = _parse_to_date(to_date)
 
     # Map frontend values to postgres date_trunc
     period_map = {
@@ -100,14 +124,14 @@ def monthly_revenue(
         func.sum(Invoice.total_amount).label("revenue")
     ).filter(Invoice.status == "paid")
 
-    if from_date:
+    if from_dt:
         query = query.filter(
-            Invoice.confirmed_at >= datetime.fromisoformat(from_date)
+            Invoice.confirmed_at >= from_dt
         )
 
-    if to_date:
+    if to_dt:
         query = query.filter(
-            Invoice.confirmed_at <= datetime.fromisoformat(to_date)
+            Invoice.confirmed_at <= to_dt
         )
 
     results = (
@@ -135,6 +159,8 @@ def container_loss_report(
     from_date: str | None,
     to_date: str | None
 ):
+    from_dt = _parse_from_date(from_date)
+    to_dt = _parse_to_date(to_date)
 
     query = (
         db.query(
@@ -145,14 +171,14 @@ def container_loss_report(
         .join(Trip, Trip.id == TripContainer.trip_id)
     )
 
-    if from_date:
+    if from_dt:
         query = query.filter(
-            Trip.created_at >= datetime.fromisoformat(from_date)
+            Trip.created_at >= from_dt
         )
 
-    if to_date:
+    if to_dt:
         query = query.filter(
-            Trip.created_at <= datetime.fromisoformat(to_date)
+            Trip.created_at <= to_dt
         )
 
     results = query.group_by(
