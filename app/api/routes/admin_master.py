@@ -525,26 +525,37 @@ def get_delivery_matrix(
     except Exception:
         raise HTTPException(status_code=400, detail="Invalid date format")
 
-    from sqlalchemy import func
     from app.models.trip import Trip
     from app.models.trip_container import TripContainer
     from app.models.client import Client
+    from app.models.container import ContainerType
 
     results = (
         db.query(
+            TripContainer.container_id.label("container_id"),
+            ContainerType.name.label("container_name"),
             Client.name.label("name"),
             func.date(Trip.created_at).label("date"),
             func.sum(TripContainer.delivered_qty).label("total_delivered")
         )
         .join(TripContainer, Trip.id == TripContainer.trip_id)
         .join(Client, Client.id == Trip.client_id)
+        .join(ContainerType, ContainerType.id == TripContainer.container_id)
         .filter(Trip.created_at >= start, Trip.created_at <= end)
-        .group_by(Client.name, func.date(Trip.created_at))
+        .group_by(
+            TripContainer.container_id,
+            ContainerType.name,
+            Client.name,
+            func.date(Trip.created_at)
+        )
+        .order_by(ContainerType.name.asc(), Client.name.asc(), func.date(Trip.created_at).asc())
         .all()
     )
 
     return [
         {
+            "container_id": r.container_id,
+            "container_name": r.container_name,
             "name": r.name,
             "date": r.date,
             "total_delivered": r.total_delivered or 0
