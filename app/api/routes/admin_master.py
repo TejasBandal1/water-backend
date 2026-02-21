@@ -1,5 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
+from sqlalchemy import func
+from sqlalchemy.exc import IntegrityError
 
 from app.core.dependencies import require_role, get_db
 from app.core.security import hash_password
@@ -205,20 +207,24 @@ def create_user_admin(
     db: Session = Depends(get_db),
     admin=Depends(require_role(["admin"]))
 ):
-    role = db.query(Role).filter(Role.name == user_data.role).first()
+    requested_role = (user_data.role or "").strip()
+    role = db.query(Role).filter(
+        func.lower(Role.name) == requested_role.lower()
+    ).first()
 
     if not role:
         raise HTTPException(status_code=400, detail="Invalid role")
 
-    # 🔥 NEW VALIDATION LOGIC
-    if user_data.role == "client":
+    is_client_role = role.name.lower() == "client"
+    assigned_client_id = user_data.client_id
+
+    if is_client_role:
         if not user_data.client_id:
             raise HTTPException(
                 status_code=400,
                 detail="Client ID is required for client role"
             )
 
-        # Check client exists
         client = db.query(Client).filter(
             Client.id == user_data.client_id
         ).first()
@@ -229,15 +235,14 @@ def create_user_admin(
                 detail="Client not found"
             )
     else:
-        # Ensure non-client roles don't attach to client
-        user_data.client_id = None
+        assigned_client_id = None
 
     new_user = User(
         name=user_data.name,
         email=user_data.email,
         hashed_password=hash_password(user_data.password),
         role_id=role.id,
-        client_id=user_data.client_id  # 🔥 NEW FIELD
+        client_id=assigned_client_id
     )
 
     db.add(new_user)
@@ -250,7 +255,7 @@ def create_user_admin(
         action="CREATE_USER",
         entity_type="User",
         entity_id=new_user.id,
-        details=f"User '{new_user.email}' created with role {user_data.role}"
+        details=f"User '{new_user.email}' created with role {role.name.lower()}"
     )
 
     return new_user
@@ -265,7 +270,9 @@ def update_user_role(
     admin=Depends(require_role(["admin"]))
 ):
     user = db.query(User).filter(User.id == user_id).first()
-    role = db.query(Role).filter(Role.name == new_role).first()
+    role = db.query(Role).filter(
+        func.lower(Role.name) == (new_role or "").strip().lower()
+    ).first()
 
     if not user or not role:
         raise HTTPException(status_code=404, detail="User or role not found")
@@ -279,7 +286,7 @@ def update_user_role(
         action="UPDATE_USER_ROLE",
         entity_type="User",
         entity_id=user.id,
-        details=f"Role changed to {new_role}"
+        details=f"Role changed to {role.name.lower()}"
     )
 
     return {"message": "Role updated successfully"}
@@ -336,8 +343,18 @@ def delete_user(
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
 
+    if user.id == admin.id:
+        raise HTTPException(status_code=400, detail="You cannot delete your own account")
+
     db.delete(user)
-    db.commit()
+    try:
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        raise HTTPException(
+            status_code=400,
+            detail="User cannot be deleted because related records exist"
+        )
 
     log_action(
         db=db,
@@ -362,7 +379,9 @@ def update_user(
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
 
-    role = db.query(Role).filter(Role.name == user_data.role).first()
+    role = db.query(Role).filter(
+        func.lower(Role.name) == (user_data.role or "").strip().lower()
+    ).first()
 
     if not role:
         raise HTTPException(status_code=400, detail="Invalid role")
@@ -374,8 +393,16 @@ def update_user(
     if user_data.password:
         user.hashed_password = hash_password(user_data.password)
 
-    # Handle client assignment
-    if user_data.role == "client":
+    is_client_role = role.name.lower() == "client"
+    if is_client_role:
+        if not user_data.client_id:
+            raise HTTPException(
+                status_code=400,
+                detail="Client ID is required for client role"
+            )
+        client = db.query(Client).filter(Client.id == user_data.client_id).first()
+        if not client:
+            raise HTTPException(status_code=404, detail="Client not found")
         user.client_id = user_data.client_id
     else:
         user.client_id = None

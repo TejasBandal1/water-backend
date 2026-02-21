@@ -1,31 +1,45 @@
-from fastapi import APIRouter, Depends, HTTPException
+from typing import Generator
+
+from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi.security import OAuth2PasswordRequestForm
+from sqlalchemy import func
 from sqlalchemy.orm import Session
+
+from app.core.security import create_access_token, hash_password, verify_password
 from app.db.session import SessionLocal
-from app.models.user import User
 from app.models.role import Role
-from app.schemas.user import UserCreate, UserLogin
-from app.core.security import hash_password, verify_password, create_access_token
+from app.models.user import User
+from app.schemas.user import UserCreate
+
 
 router = APIRouter(prefix="/auth", tags=["Auth"])
 
-def get_db():
+
+def get_db() -> Generator[Session, None, None]:
     db = SessionLocal()
     try:
         yield db
     finally:
         db.close()
 
-@router.post("/register")
+
+@router.post("/register", status_code=status.HTTP_201_CREATED)
 def register(user: UserCreate, db: Session = Depends(get_db)):
-    role = db.query(Role).filter(Role.name == user.role).first()
+    role_name = (user.role or "").strip().lower()
+    role = db.query(Role).filter(func.lower(Role.name) == role_name).first()
     if not role:
         raise HTTPException(status_code=400, detail="Invalid role")
 
+    email = (user.email or "").strip().lower()
+    existing_user = db.query(User).filter(func.lower(User.email) == email).first()
+    if existing_user:
+        raise HTTPException(status_code=409, detail="Email already registered")
+
     new_user = User(
-        name=user.name,
-        email=user.email,
+        name=(user.name or "").strip(),
+        email=email,
         hashed_password=hash_password(user.password),
-        role_id=role.id
+        role_id=role.id,
     )
 
     db.add(new_user)
@@ -34,27 +48,30 @@ def register(user: UserCreate, db: Session = Depends(get_db)):
 
     return {"message": "User created successfully"}
 
-from fastapi.security import OAuth2PasswordRequestForm
-from fastapi import Depends
 
 @router.post("/login")
 def login(
     form_data: OAuth2PasswordRequestForm = Depends(),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
 ):
-    db_user = db.query(User).filter(User.email == form_data.username).first()
+    email = (form_data.username or "").strip().lower()
+    db_user = db.query(User).filter(func.lower(User.email) == email).first()
 
     if not db_user or not verify_password(form_data.password, db_user.hashed_password):
         raise HTTPException(status_code=401, detail="Invalid credentials")
 
+    if not db_user.role or not db_user.role.name:
+        raise HTTPException(status_code=403, detail="User role not assigned")
+
     access_token = create_access_token(
-    data={
-        "sub": db_user.email,
-        "role": db_user.role.name.lower()   # 🔥 ADD THIS
-    }
-)
+        data={
+            "sub": db_user.email,
+            "role": db_user.role.name.lower(),
+            "name": db_user.name or "",
+        }
+    )
 
     return {
         "access_token": access_token,
-        "token_type": "bearer"
+        "token_type": "bearer",
     }

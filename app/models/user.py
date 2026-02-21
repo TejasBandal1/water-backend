@@ -1,8 +1,8 @@
 from sqlalchemy import Column, Integer, String, ForeignKey
 from sqlalchemy.orm import relationship
+
 from app.db.base import Base
-from sqlalchemy import Column, Integer, String, ForeignKey
-from sqlalchemy.orm import relationship
+
 
 class User(Base):
     __tablename__ = "users"
@@ -13,10 +13,7 @@ class User(Base):
     hashed_password = Column(String)
 
     role_id = Column(Integer, ForeignKey("roles.id"))
-
-    # 🔥 NEW FIELD
     client_id = Column(Integer, ForeignKey("clients.id"), nullable=True)
 
     role = relationship("Role")
     client = relationship("Client")
-

@@ -1,13 +1,14 @@
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
-from app.core.dependencies import require_role, get_db
+from app.core.dependencies import get_db, require_role
+from app.models.client import Client
+from app.models.container import ContainerType
 from app.models.trip import Trip
 from app.models.trip_container import TripContainer
 from app.schemas.trip import TripCreate
-from app.models.client import Client
-from app.models.container import ContainerType
-from app.services.audit_service import log_action  # 🔥 ADD THIS
+from app.services.audit_service import log_action
+
 
 router = APIRouter(prefix="/driver", tags=["Driver"])
 
@@ -16,12 +17,11 @@ router = APIRouter(prefix="/driver", tags=["Driver"])
 def create_trip(
     trip_data: TripCreate,
     db: Session = Depends(get_db),
-    user=Depends(require_role(["driver"]))
+    user=Depends(require_role(["driver"])),
 ):
-
     new_trip = Trip(
         client_id=trip_data.client_id,
-        driver_id=user.id
+        driver_id=user.id,
     )
 
     db.add(new_trip)
@@ -32,15 +32,13 @@ def create_trip(
     total_returned = 0
 
     for item in trip_data.containers:
-
-        # 🔥 Skip zero entries (important)
         if item.delivered_qty == 0 and item.returned_qty == 0:
             continue
 
         if item.delivered_qty < 0 or item.returned_qty < 0:
             raise HTTPException(
                 status_code=400,
-                detail="Quantities cannot be negative"
+                detail="Quantities cannot be negative",
             )
 
         total_delivered += item.delivered_qty
@@ -50,7 +48,7 @@ def create_trip(
             trip_id=new_trip.id,
             container_id=item.container_id,
             delivered_qty=item.delivered_qty,
-            returned_qty=item.returned_qty
+            returned_qty=item.returned_qty,
         )
 
         db.add(trip_container)
@@ -66,28 +64,32 @@ def create_trip(
         details=(
             f"Trip created for client {trip_data.client_id} | "
             f"Delivered: {total_delivered} | Returned: {total_returned}"
-        )
+        ),
     )
 
     return {"message": "Trip recorded successfully"}
 
+
 @router.get("/clients")
 def get_clients_for_driver(
     db: Session = Depends(get_db),
-    user=Depends(require_role(["driver"]))
+    user=Depends(require_role(["driver"])),
 ):
     return db.query(Client).filter(Client.is_active == True).all()
+
+
 @router.get("/containers")
 def get_containers_for_driver(
     db: Session = Depends(get_db),
-    user=Depends(require_role(["driver"]))
+    user=Depends(require_role(["driver"])),
 ):
     return db.query(ContainerType).filter(ContainerType.is_active == True).all()
+
 
 @router.get("/trips")
 def get_driver_trips(
     db: Session = Depends(get_db),
-    driver=Depends(require_role(["driver"]))
+    driver=Depends(require_role(["driver"])),
 ):
     trips = (
         db.query(Trip)
@@ -99,7 +101,6 @@ def get_driver_trips(
     enriched = []
 
     for trip in trips:
-
         trip_containers = db.query(TripContainer).filter(
             TripContainer.trip_id == trip.id
         ).all()
@@ -107,39 +108,28 @@ def get_driver_trips(
         total_delivered = sum(tc.delivered_qty for tc in trip_containers)
         total_returned = sum(tc.returned_qty for tc in trip_containers)
 
-        # Example price logic (you can improve later)
-        total_amount = total_delivered * 50  
+        # Placeholder price rule until per-client pricing is applied here.
+        total_amount = total_delivered * 50
 
-        enriched.append({
-            "id": trip.id,
-            "created_at": trip.created_at,
-            "client": trip.client,
-            "total_delivered": total_delivered,
-            "total_returned": total_returned,
-            "total_amount": total_amount
-        })
+        enriched.append(
+            {
+                "id": trip.id,
+                "created_at": trip.created_at,
+                "client": trip.client,
+                "total_delivered": total_delivered,
+                "total_returned": total_returned,
+                "total_amount": total_amount,
+            }
+        )
 
     return enriched
 
 
 @router.get("/orders")
+@router.get("/driver/orders", include_in_schema=False)
 def get_driver_orders(
     db: Session = Depends(get_db),
-    driver=Depends(require_role(["driver"]))
-):
-    orders = (
-        db.query(TripContainer)
-        .join(Trip)
-        .filter(Trip.driver_id == driver.id)
-        .all()
-    )
-
-    return orders
-
-@router.get("/driver/orders")
-def get_driver_orders(
-    db: Session = Depends(get_db),
-    driver=Depends(require_role(["driver"]))
+    driver=Depends(require_role(["driver"])),
 ):
     orders = (
         db.query(TripContainer)
