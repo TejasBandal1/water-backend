@@ -108,9 +108,6 @@ def get_driver_trips(
         total_delivered = sum(tc.delivered_qty for tc in trip_containers)
         total_returned = sum(tc.returned_qty for tc in trip_containers)
 
-        # Placeholder price rule until per-client pricing is applied here.
-        total_amount = total_delivered * 50
-
         enriched.append(
             {
                 "id": trip.id,
@@ -118,7 +115,6 @@ def get_driver_trips(
                 "client": trip.client,
                 "total_delivered": total_delivered,
                 "total_returned": total_returned,
-                "total_amount": total_amount,
             }
         )
 
