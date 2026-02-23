@@ -1,18 +1,24 @@
+﻿from datetime import datetime, timedelta
+
 from fastapi import APIRouter, Depends, HTTPException
+from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session, joinedload
-from datetime import datetime, timedelta
 
-from app.core.dependencies import require_role, get_db
-from app.services.billing_service import generate_draft_invoice
-from app.services.audit_service import log_action
-
+from app.core.dependencies import get_db, require_role
+from app.models.client import Client
+from app.models.client_price import ClientContainerPrice
 from app.models.invoice import Invoice
 from app.models.invoice_item import InvoiceItem
 from app.models.payment import Payment
 from app.models.trip import Trip
-from app.models.client import Client
+from app.services.audit_service import log_action
+from app.services.billing_service import generate_draft_invoice
 
 router = APIRouter(prefix="/admin/billing", tags=["Billing"])
+
+
+class InvoiceActionReason(BaseModel):
+    reason: str = Field(..., min_length=3, max_length=300)
 
 
 # =========================
@@ -74,11 +80,12 @@ def confirm_invoice(
 
 
 # =========================
-# CANCEL INVOICE (ERP STYLE)
+# CANCEL INVOICE
 # =========================
 @router.post("/cancel/{invoice_id}")
 def cancel_invoice(
     invoice_id: int,
+    payload: InvoiceActionReason,
     db: Session = Depends(get_db),
     user=Depends(require_role(["admin"]))
 ):
@@ -93,9 +100,11 @@ def cancel_invoice(
             detail="Only draft or pending invoices can be cancelled"
         )
 
-    # 🔒 DO NOT unlock trips
-    # 🔒 DO NOT delete items
-    # Just mark as cancelled
+    if invoice.amount_paid and invoice.amount_paid > 0:
+        raise HTTPException(
+            status_code=400,
+            detail="Cannot cancel invoice with recorded payments"
+        )
 
     invoice.status = "cancelled"
     db.commit()
@@ -106,10 +115,125 @@ def cancel_invoice(
         action="CANCEL_INVOICE",
         entity_type="Invoice",
         entity_id=invoice_id,
-        details="Invoice cancelled (voided)"
+        details=f"Invoice cancelled. Reason: {payload.reason.strip()}"
     )
 
     return {"message": "Invoice cancelled successfully"}
+
+
+# =========================
+# VOID + REISSUE INVOICE
+# =========================
+@router.post("/void-reissue/{invoice_id}")
+def void_reissue_invoice(
+    invoice_id: int,
+    payload: InvoiceActionReason,
+    db: Session = Depends(get_db),
+    user=Depends(require_role(["admin"]))
+):
+    invoice = db.query(Invoice).filter(Invoice.id == invoice_id).first()
+
+    if not invoice:
+        raise HTTPException(status_code=404, detail="Invoice not found")
+
+    if invoice.status not in ["draft", "pending"]:
+        raise HTTPException(
+            status_code=400,
+            detail="Only draft or pending invoices can be voided and reissued"
+        )
+
+    if invoice.amount_paid and invoice.amount_paid > 0:
+        raise HTTPException(
+            status_code=400,
+            detail="Cannot void and reissue invoice with recorded payments"
+        )
+
+    old_items = (
+        db.query(InvoiceItem)
+        .filter(InvoiceItem.invoice_id == invoice.id)
+        .all()
+    )
+
+    if not old_items:
+        raise HTTPException(
+            status_code=400,
+            detail="Cannot reissue invoice without line items"
+        )
+
+    reason = payload.reason.strip()
+
+    try:
+        new_invoice = Invoice(
+            client_id=invoice.client_id,
+            status="draft",
+            total_amount=0,
+            amount_paid=0,
+            created_at=datetime.utcnow()
+        )
+        db.add(new_invoice)
+        db.flush()
+
+        new_total = 0
+
+        for item in old_items:
+            latest_price = (
+                db.query(ClientContainerPrice)
+                .filter(
+                    ClientContainerPrice.client_id == invoice.client_id,
+                    ClientContainerPrice.container_id == item.container_id
+                )
+                .order_by(ClientContainerPrice.effective_from.desc())
+                .first()
+            )
+
+            effective_price = latest_price.price if latest_price else item.price_snapshot
+            line_total = item.quantity * effective_price
+            new_total += line_total
+
+            db.add(
+                InvoiceItem(
+                    invoice_id=new_invoice.id,
+                    container_id=item.container_id,
+                    quantity=item.quantity,
+                    price_snapshot=effective_price,
+                    total=line_total
+                )
+            )
+
+        trips = db.query(Trip).filter(Trip.invoice_id == invoice.id).all()
+        for trip in trips:
+            trip.invoice_id = new_invoice.id
+
+        invoice.status = "cancelled"
+        new_invoice.total_amount = new_total
+
+        db.commit()
+        db.refresh(new_invoice)
+
+    except HTTPException:
+        db.rollback()
+        raise
+    except Exception:
+        db.rollback()
+        raise HTTPException(status_code=500, detail="Failed to void and reissue invoice")
+
+    log_action(
+        db=db,
+        user_id=user.id,
+        action="VOID_REISSUE_INVOICE",
+        entity_type="Invoice",
+        entity_id=new_invoice.id,
+        details=(
+            f"Old invoice {invoice.id} voided and reissued as "
+            f"{new_invoice.id}. Reason: {reason}"
+        )
+    )
+
+    return {
+        "message": "Invoice voided and reissued successfully",
+        "old_invoice_id": invoice.id,
+        "new_invoice_id": new_invoice.id
+    }
 
 
 # =========================
