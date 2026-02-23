@@ -10,6 +10,7 @@ from app.db.session import SessionLocal
 from app.models.role import Role
 from app.models.user import User
 from app.schemas.user import UserCreate
+from app.services.audit_service import log_auth_event
 
 
 router = APIRouter(prefix="/auth", tags=["Auth"])
@@ -46,6 +47,14 @@ def register(user: UserCreate, db: Session = Depends(get_db)):
     db.commit()
     db.refresh(new_user)
 
+    log_auth_event(
+        db=db,
+        action="AUTH_REGISTER_SUCCESS",
+        email=new_user.email,
+        user_id=new_user.id,
+        details=f"Role: {role.name.lower()}"
+    )
+
     return {"message": "User created successfully"}
 
 
@@ -58,9 +67,22 @@ def login(
     db_user = db.query(User).filter(func.lower(User.email) == email).first()
 
     if not db_user or not verify_password(form_data.password, db_user.hashed_password):
+        log_auth_event(
+            db=db,
+            action="AUTH_LOGIN_FAILED",
+            email=email,
+            details="Invalid credentials"
+        )
         raise HTTPException(status_code=401, detail="Invalid credentials")
 
     if not db_user.role or not db_user.role.name:
+        log_auth_event(
+            db=db,
+            action="AUTH_LOGIN_FAILED",
+            email=email,
+            user_id=db_user.id,
+            details="User role not assigned"
+        )
         raise HTTPException(status_code=403, detail="User role not assigned")
 
     access_token = create_access_token(
@@ -69,6 +91,14 @@ def login(
             "role": db_user.role.name.lower(),
             "name": db_user.name or "",
         }
+    )
+
+    log_auth_event(
+        db=db,
+        action="AUTH_LOGIN_SUCCESS",
+        email=db_user.email,
+        user_id=db_user.id,
+        details=f"Role: {db_user.role.name.lower()}"
     )
 
     return {

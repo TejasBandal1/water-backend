@@ -272,6 +272,16 @@ def generate_all_invoices(
                 "reason": str(e)
             })
 
+    log_action(
+        db=db,
+        user_id=user.id,
+        action="GENERATE_ALL_DRAFT_INVOICES",
+        entity_type="InvoiceBatch",
+        details=(
+            f"Generated: {len(generated)} | Skipped: {len(skipped)}"
+        )
+    )
+
     return {
         "generated": generated,
         "skipped": skipped

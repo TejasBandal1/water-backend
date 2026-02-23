@@ -568,6 +568,15 @@ def update_client(
 
     db.commit()
 
+    log_action(
+        db=db,
+        user_id=admin.id,
+        action="UPDATE_CLIENT",
+        entity_type="Client",
+        entity_id=client.id,
+        details=f"Client '{client.name}' updated"
+    )
+
     return {"message": "Client updated successfully"}
 
 
@@ -585,6 +594,15 @@ def delete_client(
 
     db.delete(client)
     db.commit()
+
+    log_action(
+        db=db,
+        user_id=admin.id,
+        action="DELETE_CLIENT",
+        entity_type="Client",
+        entity_id=client_id,
+        details=f"Client '{client.name}' deleted"
+    )
 
     return {"message": "Client deleted successfully"}
 
@@ -608,6 +626,15 @@ def update_container(
 
     db.commit()
 
+    log_action(
+        db=db,
+        user_id=admin.id,
+        action="UPDATE_CONTAINER",
+        entity_type="Container",
+        entity_id=container.id,
+        details=f"Container '{container.name}' updated"
+    )
+
     return {"message": "Container updated successfully"}
 
 
@@ -627,6 +654,15 @@ def delete_container(
 
     container.is_active = False  # SOFT DELETE
     db.commit()
+
+    log_action(
+        db=db,
+        user_id=admin.id,
+        action="DEACTIVATE_CONTAINER",
+        entity_type="Container",
+        entity_id=container.id,
+        details=f"Container '{container.name}' deactivated"
+    )
 
     return {"message": "Container deactivated successfully"}
 
