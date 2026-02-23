@@ -13,7 +13,7 @@ from app.api.routes import (
     client
 )
 
-app = FastAPI(title="Water Management System")
+app = FastAPI(title="Riva Rich Operations API")
 
 # ===============================
 # CORS CONFIGURATION
