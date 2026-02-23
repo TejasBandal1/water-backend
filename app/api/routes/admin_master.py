@@ -12,11 +12,14 @@ from app.models.client_price import ClientContainerPrice
 from app.models.user import User
 from app.models.role import Role
 from app.models.audit_log import AuditLog
+from app.models.trip import Trip
+from app.models.trip_container import TripContainer
 
 from app.schemas.container import ContainerCreate
 from app.schemas.client import ClientCreate
 from app.schemas.client_price import ClientPriceCreate
 from app.schemas.user import UserCreate
+from app.schemas.trip import AdminMissingBillCreate
 
 from app.services.container_balance_service import get_client_container_balance
 from app.services.audit_service import log_action
@@ -174,6 +177,129 @@ def view_client_balance(
     user=Depends(require_role(["admin", "manager"]))
 ):
     return get_client_container_balance(client_id, db)
+
+
+# ---------------- DRIVERS ----------------
+
+@router.get("/drivers")
+def get_drivers(
+    db: Session = Depends(get_db),
+    admin=Depends(require_role(["admin"]))
+):
+    drivers = (
+        db.query(User)
+        .join(Role, User.role_id == Role.id)
+        .filter(func.lower(Role.name) == "driver")
+        .order_by(User.name.asc())
+        .all()
+    )
+
+    return [
+        {
+            "id": d.id,
+            "name": d.name,
+            "email": d.email
+        }
+        for d in drivers
+    ]
+
+
+# ---------------- MANUAL / MISSED BILL ----------------
+
+@router.post("/manual-bills")
+def create_missing_bill(
+    bill_data: AdminMissingBillCreate,
+    db: Session = Depends(get_db),
+    admin=Depends(require_role(["admin"]))
+):
+    client = db.query(Client).filter(Client.id == bill_data.client_id).first()
+    if not client:
+        raise HTTPException(status_code=404, detail="Client not found")
+
+    driver = (
+        db.query(User)
+        .join(Role, User.role_id == Role.id)
+        .filter(
+            User.id == bill_data.driver_id,
+            func.lower(Role.name) == "driver"
+        )
+        .first()
+    )
+
+    if not driver:
+        raise HTTPException(status_code=404, detail="Driver not found")
+
+    total_delivered = 0
+    total_returned = 0
+    has_line_item = False
+
+    new_trip = Trip(
+        client_id=bill_data.client_id,
+        driver_id=bill_data.driver_id,
+        created_at=bill_data.bill_datetime
+    )
+
+    db.add(new_trip)
+    db.flush()
+
+    for item in bill_data.containers:
+        delivered = int(item.delivered_qty or 0)
+        returned = int(item.returned_qty or 0)
+
+        if delivered < 0 or returned < 0:
+            db.rollback()
+            raise HTTPException(
+                status_code=400,
+                detail="Quantities cannot be negative"
+            )
+
+        if delivered == 0 and returned == 0:
+            continue
+
+        has_line_item = True
+        total_delivered += delivered
+        total_returned += returned
+
+        db.add(
+            TripContainer(
+                trip_id=new_trip.id,
+                container_id=item.container_id,
+                delivered_qty=delivered,
+                returned_qty=returned
+            )
+        )
+
+    if not has_line_item:
+        db.rollback()
+        raise HTTPException(
+            status_code=400,
+            detail="At least one container quantity is required"
+        )
+
+    comments = (bill_data.comments or "").strip()
+
+    db.commit()
+    db.refresh(new_trip)
+
+    log_action(
+        db=db,
+        user_id=admin.id,
+        action="ADMIN_ADD_MISSING_BILL",
+        entity_type="Trip",
+        entity_id=new_trip.id,
+        details=(
+            f"Admin added missed bill | Client: {bill_data.client_id} | "
+            f"Driver: {bill_data.driver_id} | "
+            f"Date: {bill_data.bill_datetime.isoformat()} | "
+            f"Delivered: {total_delivered} | Returned: {total_returned} | "
+            f"Comments: {comments or 'N/A'}"
+        )
+    )
+
+    return {
+        "message": "Missing bill added successfully",
+        "trip_id": new_trip.id
+    }
 
 
 # ---------------- USERS ----------------
