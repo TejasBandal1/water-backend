@@ -5,6 +5,9 @@ from app.models.invoice import Invoice
 from app.models.trip_container import TripContainer
 from app.models.trip import Trip
 
+ACTIVE_BILLING_STATUSES = ["pending", "partial", "overdue", "paid"]
+OUTSTANDING_STATUSES = ["pending", "partial", "overdue"]
+
 
 def _parse_from_date(date_value: str | None) -> datetime | None:
     if not date_value:
@@ -71,15 +74,19 @@ def outstanding_summary(db: Session):
 
     total_billed = db.query(
         func.sum(Invoice.total_amount)
+    ).filter(
+        Invoice.status.in_(ACTIVE_BILLING_STATUSES)
     ).scalar() or 0
 
     total_paid = db.query(
         func.sum(Invoice.amount_paid)
+    ).filter(
+        Invoice.status.in_(ACTIVE_BILLING_STATUSES)
     ).scalar() or 0
 
     total_outstanding = (
         db.query(func.sum(Invoice.total_amount - Invoice.amount_paid))
-        .filter(Invoice.status.in_(["pending", "overdue"]))
+        .filter(Invoice.status.in_(OUTSTANDING_STATUSES))
         .scalar()
     ) or 0
 
