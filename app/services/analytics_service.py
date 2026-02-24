@@ -70,25 +70,32 @@ def revenue_per_client(db: Session, from_date: str | None, to_date: str | None):
 # OUTSTANDING + PROFESSIONAL KPIs
 # =====================================================
 
-def outstanding_summary(db: Session):
+def outstanding_summary(db: Session, client_id: int | None = None):
 
-    total_billed = db.query(
-        func.sum(Invoice.total_amount)
-    ).filter(
+    billed_query = db.query(func.sum(Invoice.total_amount)).filter(
         Invoice.status.in_(ACTIVE_BILLING_STATUSES)
-    ).scalar() or 0
+    )
 
-    total_paid = db.query(
-        func.sum(Invoice.amount_paid)
-    ).filter(
+    paid_query = db.query(func.sum(Invoice.amount_paid)).filter(
         Invoice.status.in_(ACTIVE_BILLING_STATUSES)
-    ).scalar() or 0
+    )
 
-    total_outstanding = (
-        db.query(func.sum(Invoice.total_amount - Invoice.amount_paid))
-        .filter(Invoice.status.in_(OUTSTANDING_STATUSES))
-        .scalar()
-    ) or 0
+    outstanding_query = db.query(
+        func.sum(Invoice.total_amount - Invoice.amount_paid)
+    ).filter(
+        Invoice.status.in_(OUTSTANDING_STATUSES)
+    )
+
+    if client_id is not None:
+        billed_query = billed_query.filter(Invoice.client_id == client_id)
+        paid_query = paid_query.filter(Invoice.client_id == client_id)
+        outstanding_query = outstanding_query.filter(Invoice.client_id == client_id)
+
+    total_billed = billed_query.scalar() or 0
+
+    total_paid = paid_query.scalar() or 0
+
+    total_outstanding = outstanding_query.scalar() or 0
 
     collection_rate = (
         (total_paid / total_billed) * 100
@@ -111,7 +118,8 @@ def monthly_revenue(
     db: Session,
     period: str,
     from_date: str | None,
-    to_date: str | None
+    to_date: str | None,
+    client_id: int | None = None
 ):
     from_dt = _parse_from_date(from_date)
     to_dt = _parse_to_date(to_date)
@@ -130,6 +138,9 @@ def monthly_revenue(
         func.date_trunc(trunc_value, Invoice.confirmed_at).label("label"),
         func.sum(Invoice.total_amount).label("revenue")
     ).filter(Invoice.status == "paid")
+
+    if client_id is not None:
+        query = query.filter(Invoice.client_id == client_id)
 
     if from_dt:
         query = query.filter(
@@ -164,7 +175,8 @@ def monthly_revenue(
 def container_loss_report(
     db: Session,
     from_date: str | None,
-    to_date: str | None
+    to_date: str | None,
+    client_id: int | None = None
 ):
     from_dt = _parse_from_date(from_date)
     to_dt = _parse_to_date(to_date)
@@ -177,6 +189,9 @@ def container_loss_report(
         )
         .join(Trip, Trip.id == TripContainer.trip_id)
     )
+
+    if client_id is not None:
+        query = query.filter(Trip.client_id == client_id)
 
     if from_dt:
         query = query.filter(

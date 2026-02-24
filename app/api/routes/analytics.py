@@ -23,10 +23,11 @@ def get_revenue_per_client(
 
 @router.get("/outstanding")
 def get_outstanding(
+    client_id: int | None = Query(None),
     db: Session = Depends(get_db),
     user=Depends(require_role(["admin", "manager"]))
 ):
-    return outstanding_summary(db)
+    return outstanding_summary(db, client_id)
 
 
 @router.get("/monthly-revenue")
@@ -34,17 +35,19 @@ def get_monthly_revenue(
     period: str = Query("month"),  # day, week, month, year
     from_date: str | None = Query(None),
     to_date: str | None = Query(None),
+    client_id: int | None = Query(None),
     db: Session = Depends(get_db),
     user=Depends(require_role(["admin", "manager"]))
 ):
-    return monthly_revenue(db, period, from_date, to_date)
+    return monthly_revenue(db, period, from_date, to_date, client_id)
 
 
 @router.get("/container-loss")
 def get_container_loss(
     from_date: str | None = Query(None),
     to_date: str | None = Query(None),
+    client_id: int | None = Query(None),
     db: Session = Depends(get_db),
     user=Depends(require_role(["admin", "manager"]))
 ):
-    return container_loss_report(db, from_date, to_date)
+    return container_loss_report(db, from_date, to_date, client_id)
