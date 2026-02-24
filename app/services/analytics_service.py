@@ -2,6 +2,8 @@ from sqlalchemy.orm import Session
 from sqlalchemy import func
 from datetime import datetime, time
 from app.models.invoice import Invoice
+from app.models.payment import Payment
+from app.models.client import Client
 from app.models.trip_container import TripContainer
 from app.models.trip import Trip
 from app.models.container import ContainerType
@@ -231,3 +233,156 @@ def container_loss_report(
         })
 
     return report
+
+
+# =====================================================
+# PAYMENT CHANNEL BREAKDOWN (overall + by client)
+# =====================================================
+
+def payment_breakdown(
+    db: Session,
+    from_date: str | None,
+    to_date: str | None,
+    client_id: int | None = None
+):
+    from_dt = _parse_from_date(from_date)
+    to_dt = _parse_to_date(to_date)
+
+    query = (
+        db.query(
+            Payment,
+            Invoice.client_id.label("client_id"),
+            Client.name.label("client_name"),
+        )
+        .join(Invoice, Invoice.id == Payment.invoice_id)
+        .join(Client, Client.id == Invoice.client_id)
+    )
+
+    if client_id is not None:
+        query = query.filter(Invoice.client_id == client_id)
+
+    if from_dt:
+        query = query.filter(Payment.created_at >= from_dt)
+
+    if to_dt:
+        query = query.filter(Payment.created_at <= to_dt)
+
+    rows = query.order_by(Payment.created_at.desc()).all()
+
+    summary = {
+        "total_amount": 0.0,
+        "total_cash_amount": 0.0,
+        "total_upi_amount": 0.0,
+        "cash_only_amount": 0.0,
+        "upi_only_amount": 0.0,
+        "cash_upi_amount": 0.0,
+        "cash_only_count": 0,
+        "upi_only_count": 0,
+        "cash_upi_count": 0,
+        "payment_count": 0,
+    }
+
+    by_client: dict[int, dict] = {}
+
+    for row in rows:
+        payment = row.Payment
+        method = (payment.method or "CASH").upper()
+        amount = float(payment.amount or 0)
+
+        if method == "UPI":
+            cash_component = 0.0
+            upi_component = amount
+            summary["upi_only_amount"] += amount
+            summary["upi_only_count"] += 1
+        elif method == "CASH_UPI":
+            cash_component = float(payment.cash_amount or 0)
+            upi_component = float(payment.upi_amount or 0)
+
+            if round(cash_component + upi_component, 2) != round(amount, 2):
+                # Fallback for legacy or malformed rows
+                cash_component = max(amount - upi_component, 0)
+
+            summary["cash_upi_amount"] += amount
+            summary["cash_upi_count"] += 1
+        else:
+            cash_component = amount
+            upi_component = 0.0
+            summary["cash_only_amount"] += amount
+            summary["cash_only_count"] += 1
+
+        summary["total_amount"] += amount
+        summary["total_cash_amount"] += cash_component
+        summary["total_upi_amount"] += upi_component
+        summary["payment_count"] += 1
+
+        client_entry = by_client.get(row.client_id)
+        if not client_entry:
+            client_entry = {
+                "client_id": row.client_id,
+                "client_name": row.client_name,
+                "total_amount": 0.0,
+                "cash_amount": 0.0,
+                "upi_amount": 0.0,
+                "cash_only_count": 0,
+                "upi_only_count": 0,
+                "cash_upi_count": 0,
+                "payment_count": 0,
+            }
+            by_client[row.client_id] = client_entry
+
+        client_entry["total_amount"] += amount
+        client_entry["cash_amount"] += cash_component
+        client_entry["upi_amount"] += upi_component
+        client_entry["payment_count"] += 1
+
+        if method == "UPI":
+            client_entry["upi_only_count"] += 1
+        elif method == "CASH_UPI":
+            client_entry["cash_upi_count"] += 1
+        else:
+            client_entry["cash_only_count"] += 1
+
+    by_client_rows = sorted(
+        by_client.values(),
+        key=lambda item: item["total_amount"],
+        reverse=True
+    )
+
+    for item in by_client_rows:
+        item["total_amount"] = round(item["total_amount"], 2)
+        item["cash_amount"] = round(item["cash_amount"], 2)
+        item["upi_amount"] = round(item["upi_amount"], 2)
+
+    for key in [
+        "total_amount",
+        "total_cash_amount",
+        "total_upi_amount",
+        "cash_only_amount",
+        "upi_only_amount",
+        "cash_upi_amount",
+    ]:
+        summary[key] = round(summary[key], 2)
+
+    by_method = [
+        {
+            "method": "CASH",
+            "amount": summary["cash_only_amount"],
+            "count": summary["cash_only_count"],
+        },
+        {
+            "method": "UPI",
+            "amount": summary["upi_only_amount"],
+            "count": summary["upi_only_count"],
+        },
+        {
+            "method": "CASH_UPI",
+            "amount": summary["cash_upi_amount"],
+            "count": summary["cash_upi_count"],
+        },
+    ]
+
+    return {
+        "summary": summary,
+        "by_method": by_method,
+        "by_client": by_client_rows,
+    }
