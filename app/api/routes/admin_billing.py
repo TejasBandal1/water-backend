@@ -41,7 +41,17 @@ def generate_invoice(
         details=f"Draft invoice generated for client {client_id}"
     )
 
-    return invoice
+    return {
+        "message": "Draft invoice generated successfully",
+        "invoice": {
+            "id": invoice.id,
+            "client_id": invoice.client_id,
+            "status": invoice.status,
+            "total_amount": invoice.total_amount,
+            "amount_paid": invoice.amount_paid,
+            "created_at": invoice.created_at,
+        }
+    }
 
 
 # =========================

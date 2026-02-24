@@ -56,7 +56,16 @@ def create_container(
         details=f"Container '{new_container.name}' created"
     )
 
-    return new_container
+    return {
+        "message": "Container created successfully",
+        "container": {
+            "id": new_container.id,
+            "name": new_container.name,
+            "description": new_container.description,
+            "is_returnable": new_container.is_returnable,
+            "is_active": new_container.is_active,
+        }
+    }
 
 
 @router.get("/containers")
@@ -89,7 +98,19 @@ def create_client(
         details=f"Client '{new_client.name}' created"
     )
 
-    return new_client
+    return {
+        "message": "Client created successfully",
+        "client": {
+            "id": new_client.id,
+            "name": new_client.name,
+            "email": new_client.email,
+            "phone": new_client.phone,
+            "address": new_client.address,
+            "billing_type": new_client.billing_type,
+            "billing_interval": new_client.billing_interval,
+            "is_active": new_client.is_active,
+        }
+    }
 
 
 @router.get("/clients")
@@ -414,7 +435,16 @@ def create_user_admin(
         details=f"User '{new_user.email}' created with role {role.name.lower()}"
     )
 
-    return new_user
+    return {
+        "message": "User created successfully",
+        "user": {
+            "id": new_user.id,
+            "name": new_user.name,
+            "email": new_user.email,
+            "role": role.name.lower(),
+            "client_id": new_user.client_id,
+        }
+    }
 
 
 
