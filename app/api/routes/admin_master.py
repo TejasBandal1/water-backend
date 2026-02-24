@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 from sqlalchemy import func
 from sqlalchemy.exc import IntegrityError
@@ -21,7 +21,10 @@ from app.schemas.client_price import ClientPriceCreate
 from app.schemas.user import UserCreate
 from app.schemas.trip import AdminMissingBillCreate
 
-from app.services.container_balance_service import get_client_container_balance
+from app.services.container_balance_service import (
+    get_client_container_balance,
+    get_clients_pending_returns,
+)
 from app.services.audit_service import log_action
 from datetime import datetime
 from sqlalchemy.orm import joinedload
@@ -177,6 +180,15 @@ def view_client_balance(
     user=Depends(require_role(["admin", "manager"]))
 ):
     return get_client_container_balance(client_id, db)
+
+
+@router.get("/pending-returns")
+def view_pending_returns(
+    search: str | None = Query(default=None),
+    db: Session = Depends(get_db),
+    user=Depends(require_role(["admin", "manager"]))
+):
+    return get_clients_pending_returns(db, search)
 
 
 # ---------------- DRIVERS ----------------
@@ -685,9 +697,6 @@ def delete_container(
 
     return {"message": "Container deactivated successfully"}
 
-
-from datetime import datetime
-from fastapi import Query
 
 @router.get("/delivery-matrix")
 def get_delivery_matrix(
