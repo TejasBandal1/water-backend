@@ -229,6 +229,20 @@ def create_missing_bill(
     if not driver:
         raise HTTPException(status_code=404, detail="Driver not found")
 
+    container_ids = {item.container_id for item in bill_data.containers}
+    containers = (
+        db.query(ContainerType)
+        .filter(ContainerType.id.in_(container_ids))
+        .all()
+    )
+    container_map = {c.id: c for c in containers}
+    missing_ids = sorted(container_ids - set(container_map.keys()))
+    if missing_ids:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid container IDs: {missing_ids}",
+        )
+
     total_delivered = 0
     total_returned = 0
     has_line_item = False
@@ -243,6 +257,7 @@ def create_missing_bill(
     db.flush()
 
     for item in bill_data.containers:
+        container = container_map[item.container_id]
         delivered = int(item.delivered_qty or 0)
         returned = int(item.returned_qty or 0)
 
@@ -252,6 +267,9 @@ def create_missing_bill(
                 status_code=400,
                 detail="Quantities cannot be negative"
             )
+
+        if not container.is_returnable:
+            returned = 0
 
         if delivered == 0 and returned == 0:
             continue
@@ -623,6 +641,7 @@ def update_container(
 
     container.name = container_data.name
     container.description = container_data.description
+    container.is_returnable = container_data.is_returnable
 
     db.commit()
 

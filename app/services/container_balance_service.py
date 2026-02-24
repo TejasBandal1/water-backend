@@ -15,7 +15,10 @@ def get_client_container_balance(client_id: int, db: Session):
         )
         .join(Trip, Trip.id == TripContainer.trip_id)
         .join(ContainerType, ContainerType.id == TripContainer.container_id)
-        .filter(Trip.client_id == client_id)
+        .filter(
+            Trip.client_id == client_id,
+            ContainerType.is_returnable == True,
+        )
         .group_by(TripContainer.container_id, ContainerType.name)
         .all()
     )

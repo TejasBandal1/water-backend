@@ -7,4 +7,5 @@ class ContainerType(Base):
     id = Column(Integer, primary_key=True, index=True)
     name = Column(String, unique=True, nullable=False)
     description = Column(String)
+    is_returnable = Column(Boolean, nullable=False, default=True)
     is_active = Column(Boolean, default=True)

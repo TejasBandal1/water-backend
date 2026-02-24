@@ -4,6 +4,7 @@ from datetime import datetime, time
 from app.models.invoice import Invoice
 from app.models.trip_container import TripContainer
 from app.models.trip import Trip
+from app.models.container import ContainerType
 
 ACTIVE_BILLING_STATUSES = ["pending", "partial", "overdue", "paid"]
 OUTSTANDING_STATUSES = ["pending", "partial", "overdue"]
@@ -188,6 +189,8 @@ def container_loss_report(
             func.sum(TripContainer.returned_qty).label("returned")
         )
         .join(Trip, Trip.id == TripContainer.trip_id)
+        .join(ContainerType, ContainerType.id == TripContainer.container_id)
+        .filter(ContainerType.is_returnable == True)
     )
 
     if client_id is not None:

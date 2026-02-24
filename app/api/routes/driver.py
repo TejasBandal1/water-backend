@@ -19,6 +19,20 @@ def create_trip(
     db: Session = Depends(get_db),
     user=Depends(require_role(["driver"])),
 ):
+    container_ids = {item.container_id for item in trip_data.containers}
+    containers = (
+        db.query(ContainerType)
+        .filter(ContainerType.id.in_(container_ids))
+        .all()
+    )
+    container_map = {c.id: c for c in containers}
+    missing_ids = sorted(container_ids - set(container_map.keys()))
+    if missing_ids:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid container IDs: {missing_ids}",
+        )
+
     new_trip = Trip(
         client_id=trip_data.client_id,
         driver_id=user.id,
@@ -32,23 +46,29 @@ def create_trip(
     total_returned = 0
 
     for item in trip_data.containers:
-        if item.delivered_qty == 0 and item.returned_qty == 0:
+        container = container_map[item.container_id]
+        returned_qty = item.returned_qty
+
+        if not container.is_returnable:
+            returned_qty = 0
+
+        if item.delivered_qty == 0 and returned_qty == 0:
             continue
 
-        if item.delivered_qty < 0 or item.returned_qty < 0:
+        if item.delivered_qty < 0 or returned_qty < 0:
             raise HTTPException(
                 status_code=400,
                 detail="Quantities cannot be negative",
             )
 
         total_delivered += item.delivered_qty
-        total_returned += item.returned_qty
+        total_returned += returned_qty
 
         trip_container = TripContainer(
             trip_id=new_trip.id,
             container_id=item.container_id,
             delivered_qty=item.delivered_qty,
-            returned_qty=item.returned_qty,
+            returned_qty=returned_qty,
         )
 
         db.add(trip_container)
