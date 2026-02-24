@@ -19,7 +19,7 @@ class UserLogin(BaseModel):
 class UserResponse(BaseModel):
     id: int
     name: str
-    email: EmailStr
+    email: str
     role: str
     client_id: Optional[int] = None
 
