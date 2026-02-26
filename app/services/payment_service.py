@@ -20,6 +20,7 @@ def record_payment(
     cash_amount: float | None = None,
     upi_amount: float | None = None,
     upi_account: str | None = None,
+    allow_zero_split: bool = False,
 ):
     invoice = db.query(Invoice).filter(Invoice.id == invoice_id).first()
 
@@ -66,11 +67,24 @@ def record_payment(
         normalized_cash = _round_money(cash_amount or 0)
         normalized_upi = _round_money(upi_amount or 0)
 
-        if normalized_cash <= 0 or normalized_upi <= 0:
-            raise HTTPException(
-                status_code=400,
-                detail="Both cash and UPI amounts are required for CASH_UPI payments",
-            )
+        if allow_zero_split:
+            if normalized_cash < 0 or normalized_upi < 0:
+                raise HTTPException(
+                    status_code=400,
+                    detail="Cash and UPI amounts cannot be negative",
+                )
+
+            if normalized_cash == 0 and normalized_upi == 0:
+                raise HTTPException(
+                    status_code=400,
+                    detail="Provide cash or UPI amount for CASH_UPI payments",
+                )
+        else:
+            if normalized_cash <= 0 or normalized_upi <= 0:
+                raise HTTPException(
+                    status_code=400,
+                    detail="Both cash and UPI amounts are required for CASH_UPI payments",
+                )
 
         if _round_money(normalized_cash + normalized_upi) != amount:
             raise HTTPException(
