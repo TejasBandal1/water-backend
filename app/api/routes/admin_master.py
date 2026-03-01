@@ -118,7 +118,7 @@ def get_clients(
     db: Session = Depends(get_db),
     user=Depends(require_role(["admin"]))
 ):
-    return db.query(Client).all()
+    return db.query(Client).filter(Client.is_active == True).all()
 
 
 # ---------------- CLIENT PRICING ----------------
@@ -365,6 +365,7 @@ def get_users(
     users = (
         db.query(User)
         .options(joinedload(User.role))
+        .filter(~User.email.like("archived_user_%@rivarich.local"))
         .all()
     )
 
@@ -532,26 +533,44 @@ def delete_user(
     if user.id == admin.id:
         raise HTTPException(status_code=400, detail="You cannot delete your own account")
 
+    deleted = False
+
+    # Attempt hard delete first.
     db.delete(user)
     try:
         db.commit()
+        deleted = True
     except IntegrityError:
         db.rollback()
-        raise HTTPException(
-            status_code=400,
-            detail="User cannot be deleted because related records exist"
-        )
+
+    if not deleted:
+        # Keep historical references intact (trips, audit logs) by archiving user
+        # instead of hard delete when relational integrity blocks deletion.
+        archived_email = f"archived_user_{user.id}@rivarich.local"
+        user.name = f"{(user.name or 'User').strip()} (Archived)"
+        user.email = archived_email
+        user.hashed_password = hash_password(f"archived-{user.id}-{datetime.utcnow().timestamp()}")
+        user.client_id = None
+
+        try:
+            db.commit()
+        except IntegrityError:
+            db.rollback()
+            raise HTTPException(
+                status_code=400,
+                detail="User cannot be deleted because related records exist"
+            )
 
     log_action(
         db=db,
         user_id=admin.id,
-        action="DELETE_USER",
+        action="DELETE_USER" if deleted else "ARCHIVE_USER",
         entity_type="User",
         entity_id=user_id,
-        details=f"User deleted"
+        details="User deleted" if deleted else "User archived"
     )
 
-    return {"message": "User deleted successfully"}
+    return {"message": "User deleted successfully" if deleted else "User archived successfully"}
 
 @router.put("/users/{user_id}")
 def update_user(
@@ -652,19 +671,22 @@ def delete_client(
     if not client:
         raise HTTPException(status_code=404, detail="Client not found")
 
-    db.delete(client)
+    if not client.is_active:
+        return {"message": "Client already inactive"}
+
+    client.is_active = False
     db.commit()
 
     log_action(
         db=db,
         user_id=admin.id,
-        action="DELETE_CLIENT",
+        action="DEACTIVATE_CLIENT",
         entity_type="Client",
         entity_id=client_id,
-        details=f"Client '{client.name}' deleted"
+        details=f"Client '{client.name}' deactivated"
     )
 
-    return {"message": "Client deleted successfully"}
+    return {"message": "Client deactivated successfully"}
 
 # UPDATE CONTAINER
 @router.put("/containers/{container_id}")
