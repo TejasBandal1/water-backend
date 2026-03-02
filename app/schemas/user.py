@@ -11,6 +11,14 @@ class UserCreate(BaseModel):
     client_id: Optional[int] = None
 
 
+class UserUpdate(BaseModel):
+    name: str
+    email: str
+    role: str
+    password: Optional[str] = None
+    client_id: Optional[int] = None
+
+
 class UserLogin(BaseModel):
     email: EmailStr
     password: str

@@ -18,7 +18,7 @@ from app.models.trip_container import TripContainer
 from app.schemas.container import ContainerCreate
 from app.schemas.client import ClientCreate
 from app.schemas.client_price import ClientPriceCreate
-from app.schemas.user import UserCreate
+from app.schemas.user import UserCreate, UserUpdate
 from app.schemas.trip import AdminMissingBillCreate
 
 from app.services.container_balance_service import (
@@ -575,7 +575,7 @@ def delete_user(
 @router.put("/users/{user_id}")
 def update_user(
     user_id: int,
-    user_data: UserCreate,
+    user_data: UserUpdate,
     db: Session = Depends(get_db),
     admin=Depends(require_role(["admin"]))
 ):
