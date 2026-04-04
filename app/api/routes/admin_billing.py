@@ -3,7 +3,7 @@ from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
-from sqlalchemy import extract
+from sqlalchemy import extract, func
 from sqlalchemy.orm import Session, joinedload
 
 from app.core.dependencies import get_db, require_role
@@ -418,6 +418,24 @@ def get_monthly_billing_summary(
         )
 
     invoices = invoice_query.all()
+    invoice_ids = [invoice.id for invoice in invoices]
+
+    invoice_jars_map: dict[int, int] = {}
+    if invoice_ids:
+        jar_rows = (
+            db.query(
+                InvoiceItem.invoice_id.label("invoice_id"),
+                func.sum(InvoiceItem.quantity).label("total_jars_delivered")
+            )
+            .filter(InvoiceItem.invoice_id.in_(invoice_ids))
+            .group_by(InvoiceItem.invoice_id)
+            .all()
+        )
+
+        invoice_jars_map = {
+            row.invoice_id: int(row.total_jars_delivered or 0)
+            for row in jar_rows
+        }
 
     by_client: dict[int, dict] = {}
     total_monthly_billed = 0.0
@@ -433,6 +451,7 @@ def get_monthly_billing_summary(
         total_amount = _to_money(invoice.total_amount)
         paid_amount = _to_money(invoice.amount_paid)
         outstanding = _to_money(max(total_amount - paid_amount, 0))
+        invoice_jars_delivered = int(invoice_jars_map.get(invoice.id, 0))
         invoice_day = (
             invoice.created_at.strftime("%Y-%m-%d")
             if invoice.created_at
@@ -448,6 +467,7 @@ def get_monthly_billing_summary(
                 "total_monthly_bill": 0.0,
                 "total_paid": 0.0,
                 "total_outstanding": 0.0,
+                "total_jars_delivered": 0,
                 "pending_invoices": [],
                 "daily_map": {}
             }
@@ -463,6 +483,7 @@ def get_monthly_billing_summary(
         client_entry["total_outstanding"] = _to_money(
             client_entry["total_outstanding"] + outstanding
         )
+        client_entry["total_jars_delivered"] += invoice_jars_delivered
 
         if outstanding > 0 and status in {"pending", "partial", "overdue"}:
             client_entry["pending_invoice_count"] += 1
@@ -473,7 +494,8 @@ def get_monthly_billing_summary(
                 "due_date": invoice.due_date,
                 "total_amount": total_amount,
                 "amount_paid": paid_amount,
-                "outstanding_amount": outstanding
+                "outstanding_amount": outstanding,
+                "total_jars_delivered": invoice_jars_delivered
             })
 
         if invoice_day:
@@ -484,7 +506,8 @@ def get_monthly_billing_summary(
                     "invoice_ids": [],
                     "billed_amount": 0.0,
                     "paid_amount": 0.0,
-                    "outstanding_amount": 0.0
+                    "outstanding_amount": 0.0,
+                    "total_jars_delivered": 0
                 }
 
             day_entry = client_entry["daily_map"][invoice_day]
@@ -495,6 +518,7 @@ def get_monthly_billing_summary(
             day_entry["outstanding_amount"] = _to_money(
                 day_entry["outstanding_amount"] + outstanding
             )
+            day_entry["total_jars_delivered"] += invoice_jars_delivered
 
         total_monthly_billed = _to_money(total_monthly_billed + total_amount)
         total_monthly_paid = _to_money(total_monthly_paid + paid_amount)
@@ -521,6 +545,7 @@ def get_monthly_billing_summary(
             "total_monthly_bill": entry["total_monthly_bill"],
             "total_paid": entry["total_paid"],
             "total_outstanding": entry["total_outstanding"],
+            "total_jars_delivered": entry["total_jars_delivered"],
             "daily_details": daily_rows,
             "pending_invoices": pending_invoices
         })
