@@ -7,6 +7,7 @@ from app.services.analytics_service import (
     monthly_revenue,
     container_loss_report,
     payment_breakdown,
+    driver_delivery_summary,
 )
 
 router = APIRouter(prefix="/analytics", tags=["Analytics"])
@@ -24,11 +25,13 @@ def get_revenue_per_client(
 
 @router.get("/outstanding")
 def get_outstanding(
+    from_date: str | None = Query(None),
+    to_date: str | None = Query(None),
     client_id: int | None = Query(None),
     db: Session = Depends(get_db),
     user=Depends(require_role(["admin", "manager"]))
 ):
-    return outstanding_summary(db, client_id)
+    return outstanding_summary(db, client_id, from_date, to_date)
 
 
 @router.get("/monthly-revenue")
@@ -63,3 +66,15 @@ def get_payment_breakdown(
     user=Depends(require_role(["admin", "manager"]))
 ):
     return payment_breakdown(db, from_date, to_date, client_id)
+
+
+@router.get("/driver-delivery-summary")
+def get_driver_delivery_summary(
+    from_date: str | None = Query(None),
+    to_date: str | None = Query(None),
+    search: str | None = Query(None),
+    driver_id: int | None = Query(None),
+    db: Session = Depends(get_db),
+    user=Depends(require_role(["admin", "manager"]))
+):
+    return driver_delivery_summary(db, from_date, to_date, search, driver_id)

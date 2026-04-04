@@ -7,6 +7,7 @@ from app.models.client import Client
 from app.models.trip_container import TripContainer
 from app.models.trip import Trip
 from app.models.container import ContainerType
+from app.models.user import User
 
 ACTIVE_BILLING_STATUSES = ["pending", "partial", "overdue", "paid"]
 OUTSTANDING_STATUSES = ["pending", "partial", "overdue"]
@@ -73,7 +74,14 @@ def revenue_per_client(db: Session, from_date: str | None, to_date: str | None):
 # OUTSTANDING + PROFESSIONAL KPIs
 # =====================================================
 
-def outstanding_summary(db: Session, client_id: int | None = None):
+def outstanding_summary(
+    db: Session,
+    client_id: int | None = None,
+    from_date: str | None = None,
+    to_date: str | None = None
+):
+    from_dt = _parse_from_date(from_date)
+    to_dt = _parse_to_date(to_date)
 
     billed_query = db.query(func.sum(Invoice.total_amount)).filter(
         Invoice.status.in_(ACTIVE_BILLING_STATUSES)
@@ -93,6 +101,16 @@ def outstanding_summary(db: Session, client_id: int | None = None):
         billed_query = billed_query.filter(Invoice.client_id == client_id)
         paid_query = paid_query.filter(Invoice.client_id == client_id)
         outstanding_query = outstanding_query.filter(Invoice.client_id == client_id)
+
+    if from_dt:
+        billed_query = billed_query.filter(Invoice.created_at >= from_dt)
+        paid_query = paid_query.filter(Invoice.created_at >= from_dt)
+        outstanding_query = outstanding_query.filter(Invoice.created_at >= from_dt)
+
+    if to_dt:
+        billed_query = billed_query.filter(Invoice.created_at <= to_dt)
+        paid_query = paid_query.filter(Invoice.created_at <= to_dt)
+        outstanding_query = outstanding_query.filter(Invoice.created_at <= to_dt)
 
     total_billed = billed_query.scalar() or 0
 
@@ -385,4 +403,90 @@ def payment_breakdown(
         "summary": summary,
         "by_method": by_method,
         "by_client": by_client_rows,
+    }
+
+
+# =====================================================
+# DRIVER DELIVERY SUMMARY (with optional filters)
+# =====================================================
+
+def driver_delivery_summary(
+    db: Session,
+    from_date: str | None,
+    to_date: str | None,
+    search: str | None = None,
+    driver_id: int | None = None
+):
+    from_dt = _parse_from_date(from_date)
+    to_dt = _parse_to_date(to_date)
+
+    query = (
+        db.query(
+            Trip.driver_id.label("driver_id"),
+            User.name.label("driver_name"),
+            User.email.label("driver_email"),
+            func.count(func.distinct(Trip.id)).label("trip_count"),
+            func.sum(TripContainer.delivered_qty).label("total_jars_delivered"),
+            func.sum(TripContainer.returned_qty).label("total_jars_returned"),
+        )
+        .join(Trip, Trip.id == TripContainer.trip_id)
+        .join(User, User.id == Trip.driver_id)
+    )
+
+    if from_dt:
+        query = query.filter(Trip.created_at >= from_dt)
+
+    if to_dt:
+        query = query.filter(Trip.created_at <= to_dt)
+
+    if driver_id is not None:
+        query = query.filter(Trip.driver_id == driver_id)
+
+    if search and search.strip():
+        term = f"%{search.strip()}%"
+        query = query.filter(
+            User.name.ilike(term) |
+            User.email.ilike(term)
+        )
+
+    rows = (
+        query
+        .group_by(Trip.driver_id, User.name, User.email)
+        .order_by(func.sum(TripContainer.delivered_qty).desc())
+        .all()
+    )
+
+    data = []
+    total_delivered = 0
+    total_returned = 0
+    total_trips = 0
+
+    for row in rows:
+        delivered = int(row.total_jars_delivered or 0)
+        returned = int(row.total_jars_returned or 0)
+        trips = int(row.trip_count or 0)
+
+        total_delivered += delivered
+        total_returned += returned
+        total_trips += trips
+
+        data.append({
+            "driver_id": row.driver_id,
+            "driver_name": row.driver_name,
+            "driver_email": row.driver_email,
+            "trip_count": trips,
+            "total_jars_delivered": delivered,
+            "total_jars_returned": returned,
+            "net_jars_outstanding": delivered - returned,
+        })
+
+    return {
+        "rows": data,
+        "summary": {
+            "drivers_count": len(data),
+            "total_trip_count": total_trips,
+            "total_jars_delivered": total_delivered,
+            "total_jars_returned": total_returned,
+            "total_net_jars_outstanding": total_delivered - total_returned,
+        }
     }

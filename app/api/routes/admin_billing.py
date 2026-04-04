@@ -322,7 +322,10 @@ def get_all_invoices(
 ):
     invoices = (
         db.query(Invoice)
-        .options(joinedload(Invoice.client))
+        .options(
+            joinedload(Invoice.client),
+            joinedload(Invoice.trips).joinedload(Trip.driver)
+        )
         .order_by(Invoice.id.desc())
         .all()
     )
@@ -331,6 +334,12 @@ def get_all_invoices(
 
     for inv in invoices:
         status = inv.status
+        driver_names = _invoice_driver_names(inv)
+        driver_name = (
+            driver_names[0]
+            if len(driver_names) == 1
+            else ("Multiple Drivers" if len(driver_names) > 1 else None)
+        )
 
         # Overdue logic (ignore cancelled)
         if (
@@ -359,6 +368,8 @@ def get_all_invoices(
             "id": inv.id,
             "client_id": inv.client_id,
             "client_name": inv.client.name if inv.client else None,
+            "driver_name": driver_name,
+            "driver_names": driver_names,
             "total_amount": inv.total_amount,
             "amount_paid": inv.amount_paid,
             "status": status,
@@ -383,6 +394,15 @@ def _resolved_status(invoice: Invoice) -> str:
         return "overdue"
 
     return invoice.status
+
+
+def _invoice_driver_names(invoice: Invoice) -> list[str]:
+    names = {
+        (trip.driver.name or "").strip()
+        for trip in (invoice.trips or [])
+        if trip.driver and (trip.driver.name or "").strip()
+    }
+    return sorted(names)
 
 
 # =========================
@@ -774,7 +794,10 @@ def get_invoice_detail(
 ):
     invoice = (
         db.query(Invoice)
-        .options(joinedload(Invoice.client))
+        .options(
+            joinedload(Invoice.client),
+            joinedload(Invoice.trips).joinedload(Trip.driver)
+        )
         .filter(Invoice.id == invoice_id)
         .first()
     )
@@ -805,10 +828,19 @@ def get_invoice_detail(
         .all()
     )
 
+    driver_names = _invoice_driver_names(invoice)
+    driver_name = (
+        driver_names[0]
+        if len(driver_names) == 1
+        else ("Multiple Drivers" if len(driver_names) > 1 else None)
+    )
+
     return {
         "invoice": {
             "id": invoice.id,
             "client": invoice.client,
+            "driver_name": driver_name,
+            "driver_names": driver_names,
             "total_amount": invoice.total_amount,
             "amount_paid": invoice.amount_paid,
             "status": status,
