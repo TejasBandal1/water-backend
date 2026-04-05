@@ -21,6 +21,8 @@ app = FastAPI(title="Riva Rich Operations API")
 origins = [
     "http://localhost:5173",
     "https://water-frontend-beta.vercel.app",
+    "https://rivarich.cloud",
+    "https://www.rivarich.cloud",
 ]
 
 app.add_middleware(
