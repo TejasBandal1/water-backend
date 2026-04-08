@@ -13,6 +13,7 @@ from app.models.invoice import Invoice
 from app.models.invoice_item import InvoiceItem
 from app.models.payment import Payment
 from app.models.trip import Trip
+from app.models.trip_container import TripContainer
 from app.services.audit_service import log_action
 from app.services.billing_service import generate_draft_invoice
 from app.services.payment_service import record_payment
@@ -143,6 +144,95 @@ def cancel_invoice(
     )
 
     return {"message": "Invoice cancelled successfully"}
+
+
+# =========================
+# DELETE DRAFT INVOICE
+# =========================
+@router.delete("/{invoice_id}")
+def delete_invoice(
+    invoice_id: int,
+    db: Session = Depends(get_db),
+    user=Depends(require_role(["admin"]))
+):
+    invoice = db.query(Invoice).filter(Invoice.id == invoice_id).first()
+
+    if not invoice:
+        raise HTTPException(status_code=404, detail="Invoice not found")
+
+    if invoice.status != "draft":
+        raise HTTPException(
+            status_code=400,
+            detail="Only draft invoices can be deleted"
+        )
+
+    if invoice.amount_paid and invoice.amount_paid > 0:
+        raise HTTPException(
+            status_code=400,
+            detail="Cannot delete invoice with recorded payments"
+        )
+
+    has_payments = (
+        db.query(Payment.id)
+        .filter(Payment.invoice_id == invoice_id)
+        .first()
+        is not None
+    )
+    if has_payments:
+        raise HTTPException(
+            status_code=400,
+            detail="Cannot delete invoice with payment records"
+        )
+
+    try:
+        trip_ids = [
+            trip_id
+            for (trip_id,) in (
+                db.query(Trip.id)
+                .filter(Trip.invoice_id == invoice.id)
+                .all()
+            )
+        ]
+
+        deleted_trip_containers = 0
+        deleted_trip_count = 0
+
+        if trip_ids:
+            deleted_trip_containers = (
+                db.query(TripContainer)
+                .filter(TripContainer.trip_id.in_(trip_ids))
+                .delete(synchronize_session=False)
+            )
+
+            deleted_trip_count = (
+                db.query(Trip)
+                .filter(Trip.id.in_(trip_ids))
+                .delete(synchronize_session=False)
+            )
+
+        db.query(InvoiceItem).filter(
+            InvoiceItem.invoice_id == invoice.id
+        ).delete(synchronize_session=False)
+
+        db.delete(invoice)
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise HTTPException(status_code=500, detail="Failed to delete invoice")
+
+    log_action(
+        db=db,
+        user_id=user.id,
+        action="DELETE_DRAFT_INVOICE",
+        entity_type="Invoice",
+        entity_id=invoice_id,
+        details=(
+            f"Draft invoice deleted. Removed trips: {deleted_trip_count} | "
+            f"Removed trip containers: {deleted_trip_containers}"
+        )
+    )
+
+    return {"message": "Draft invoice deleted successfully"}
 
 
 # =========================
@@ -410,6 +500,8 @@ def _invoice_driver_names(invoice: Invoice) -> list[str]:
 # =========================
 @router.get("/monthly")
 def get_monthly_billing_summary(
+    period: str = Query(default="monthly"),
+    reference_date: str | None = Query(default=None),
     year: int | None = Query(default=None, ge=2000, le=2100),
     month: int | None = Query(default=None, ge=1, le=12),
     search: str | None = Query(default=None),
@@ -417,22 +509,103 @@ def get_monthly_billing_summary(
     user=Depends(require_role(["admin"]))
 ):
     now = datetime.utcnow()
-    selected_year = year or now.year
-    selected_month = month or now.month
+    normalized_period = (period or "monthly").strip().lower()
+
+    selected_year: int
+    selected_month: int
+    range_start: datetime
+    range_end_exclusive: datetime
+    selected_reference_date: str
+
+    if reference_date:
+        try:
+            reference_day = datetime.fromisoformat(reference_date).date()
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Invalid reference_date format")
+    else:
+        reference_day = now.date()
+
+    if normalized_period == "daily":
+        range_start = datetime.combine(reference_day, datetime.min.time())
+        range_end_exclusive = range_start + timedelta(days=1)
+        selected_year = range_start.year
+        selected_month = range_start.month
+        selected_reference_date = reference_day.isoformat()
+    elif normalized_period == "weekly":
+        week_start_day = reference_day - timedelta(days=reference_day.weekday())
+        range_start = datetime.combine(week_start_day, datetime.min.time())
+        range_end_exclusive = range_start + timedelta(days=7)
+        selected_year = range_start.year
+        selected_month = range_start.month
+        selected_reference_date = reference_day.isoformat()
+    elif normalized_period == "monthly":
+        if reference_date:
+            selected_year = reference_day.year
+            selected_month = reference_day.month
+            selected_reference_date = reference_day.isoformat()
+        else:
+            selected_year = year or now.year
+            selected_month = month or now.month
+            selected_reference_date = datetime(
+                selected_year,
+                selected_month,
+                1
+            ).date().isoformat()
+
+        range_start = datetime(selected_year, selected_month, 1)
+        if selected_month == 12:
+            range_end_exclusive = datetime(selected_year + 1, 1, 1)
+        else:
+            range_end_exclusive = datetime(selected_year, selected_month + 1, 1)
+    else:
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid period. Use daily, weekly, or monthly"
+        )
+
+    search_term = (search or "").strip()
+
+    trip_jars_query = (
+        db.query(
+            Trip.client_id.label("client_id"),
+            Client.name.label("client_name"),
+            func.sum(TripContainer.delivered_qty).label("total_jars_delivered")
+        )
+        .join(TripContainer, Trip.id == TripContainer.trip_id)
+        .join(Client, Client.id == Trip.client_id)
+        .filter(
+            Trip.created_at >= range_start,
+            Trip.created_at < range_end_exclusive
+        )
+        .group_by(Trip.client_id, Client.name)
+    )
+
+    if search_term:
+        trip_jars_query = trip_jars_query.filter(Client.name.ilike(f"%{search_term}%"))
+
+    trip_jars_rows = trip_jars_query.all()
+    trip_jars_map = {
+        int(row.client_id): int(row.total_jars_delivered or 0)
+        for row in trip_jars_rows
+    }
+    trip_client_name_map = {
+        int(row.client_id): row.client_name
+        for row in trip_jars_rows
+    }
 
     invoice_query = (
         db.query(Invoice)
         .options(joinedload(Invoice.client))
         .filter(
-            extract("year", Invoice.created_at) == selected_year,
-            extract("month", Invoice.created_at) == selected_month,
+            Invoice.created_at >= range_start,
+            Invoice.created_at < range_end_exclusive,
             Invoice.status.in_(["pending", "partial", "overdue", "paid"])
         )
         .order_by(Invoice.created_at.asc(), Invoice.id.asc())
     )
 
-    if search and search.strip():
-        term = f"%{search.strip()}%"
+    if search_term:
+        term = f"%{search_term}%"
         invoice_query = invoice_query.join(Client, Client.id == Invoice.client_id).filter(
             Client.name.ilike(term)
         )
@@ -503,7 +676,6 @@ def get_monthly_billing_summary(
         client_entry["total_outstanding"] = _to_money(
             client_entry["total_outstanding"] + outstanding
         )
-        client_entry["total_jars_delivered"] += invoice_jars_delivered
 
         if outstanding > 0 and status in {"pending", "partial", "overdue"}:
             client_entry["pending_invoice_count"] += 1
@@ -549,6 +721,24 @@ def get_monthly_billing_summary(
         if outstanding > 0 and status in {"pending", "partial", "overdue"}:
             total_pending_invoices += 1
 
+    for client_id, total_jars in trip_jars_map.items():
+        if client_id not in by_client:
+            by_client[client_id] = {
+                "client_id": client_id,
+                "client_name": trip_client_name_map.get(client_id, f"Client {client_id}"),
+                "invoice_count": 0,
+                "pending_invoice_count": 0,
+                "total_monthly_bill": 0.0,
+                "total_paid": 0.0,
+                "total_outstanding": 0.0,
+                "total_jars_delivered": total_jars,
+                "pending_invoices": [],
+                "daily_map": {}
+            }
+            continue
+
+        by_client[client_id]["total_jars_delivered"] = total_jars
+
     rows = []
     for entry in by_client.values():
         daily_rows = sorted(entry["daily_map"].values(), key=lambda row: row["date"])
@@ -576,6 +766,10 @@ def get_monthly_billing_summary(
     )
 
     return {
+        "period": normalized_period,
+        "reference_date": selected_reference_date,
+        "range_start_date": range_start.date().isoformat(),
+        "range_end_date": (range_end_exclusive - timedelta(days=1)).date().isoformat(),
         "year": selected_year,
         "month": selected_month,
         "rows": rows,
