@@ -147,7 +147,7 @@ def cancel_invoice(
 
 
 # =========================
-# DELETE DRAFT INVOICE
+# DELETE INVOICE (SAFE HARD DELETE)
 # =========================
 @router.delete("/{invoice_id}")
 def delete_invoice(
@@ -160,10 +160,13 @@ def delete_invoice(
     if not invoice:
         raise HTTPException(status_code=404, detail="Invoice not found")
 
-    if invoice.status != "draft":
+    deletable_statuses = {"draft", "pending", "overdue", "cancelled"}
+    invoice_status = (invoice.status or "").strip().lower()
+
+    if invoice_status not in deletable_statuses:
         raise HTTPException(
             status_code=400,
-            detail="Only draft invoices can be deleted"
+            detail="Only unpaid draft/pending/overdue/cancelled invoices can be deleted"
         )
 
     if invoice.amount_paid and invoice.amount_paid > 0:
@@ -223,16 +226,16 @@ def delete_invoice(
     log_action(
         db=db,
         user_id=user.id,
-        action="DELETE_DRAFT_INVOICE",
+        action="DELETE_INVOICE",
         entity_type="Invoice",
         entity_id=invoice_id,
         details=(
-            f"Draft invoice deleted. Removed trips: {deleted_trip_count} | "
+            f"Invoice (status: {invoice_status}) deleted. Removed trips: {deleted_trip_count} | "
             f"Removed trip containers: {deleted_trip_containers}"
         )
     )
 
-    return {"message": "Draft invoice deleted successfully"}
+    return {"message": "Invoice deleted successfully"}
 
 
 # =========================
