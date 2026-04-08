@@ -74,7 +74,8 @@ def get_driver_delivery_summary(
     to_date: str | None = Query(None),
     search: str | None = Query(None),
     driver_id: int | None = Query(None),
+    client_id: int | None = Query(None),
     db: Session = Depends(get_db),
     user=Depends(require_role(["admin", "manager"]))
 ):
-    return driver_delivery_summary(db, from_date, to_date, search, driver_id)
+    return driver_delivery_summary(db, from_date, to_date, search, driver_id, client_id)

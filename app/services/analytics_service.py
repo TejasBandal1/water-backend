@@ -415,7 +415,8 @@ def driver_delivery_summary(
     from_date: str | None,
     to_date: str | None,
     search: str | None = None,
-    driver_id: int | None = None
+    driver_id: int | None = None,
+    client_id: int | None = None
 ):
     from_dt = _parse_from_date(from_date)
     to_dt = _parse_to_date(to_date)
@@ -441,6 +442,9 @@ def driver_delivery_summary(
 
     if driver_id is not None:
         query = query.filter(Trip.driver_id == driver_id)
+
+    if client_id is not None:
+        query = query.filter(Trip.client_id == client_id)
 
     if search and search.strip():
         term = f"%{search.strip()}%"
