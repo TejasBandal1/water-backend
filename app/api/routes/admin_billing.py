@@ -1,7 +1,9 @@
-﻿from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
+from io import BytesIO
 from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import extract, func
 from sqlalchemy.orm import Session, joinedload
@@ -16,6 +18,7 @@ from app.models.trip import Trip
 from app.models.trip_container import TripContainer
 from app.services.audit_service import log_action
 from app.services.billing_service import generate_draft_invoice
+from app.services.excel_export_service import ALLOWED_STATUSES, build_excel_export
 from app.services.payment_service import record_payment
 
 router = APIRouter(prefix="/admin/billing", tags=["Billing"])
@@ -472,6 +475,71 @@ def get_all_invoices(
         })
 
     return result
+
+
+@router.get("/exports/excel")
+def export_billing_excel(
+    report_type: Literal["invoices", "billing", "payments", "full"] = Query(default="full"),
+    from_date: date | None = Query(default=None),
+    to_date: date | None = Query(default=None),
+    client_id: int | None = Query(default=None),
+    driver_id: int | None = Query(default=None),
+    status: str | None = Query(default=None),
+    payment_method: Literal["CASH", "UPI", "CASH_UPI"] | None = Query(default=None),
+    include_cancelled: bool = Query(default=False),
+    db: Session = Depends(get_db),
+    user=Depends(require_role(["admin"]))
+):
+    if from_date and to_date and from_date > to_date:
+        raise HTTPException(status_code=400, detail="from_date cannot be after to_date")
+
+    normalized_status = (status or "").strip().lower() or None
+    if normalized_status == "all":
+        normalized_status = None
+
+    if normalized_status and normalized_status not in ALLOWED_STATUSES:
+        allowed = ", ".join(sorted(ALLOWED_STATUSES))
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid status filter. Allowed values: {allowed}"
+        )
+
+    try:
+        file_bytes, filename, meta = build_excel_export(
+            db=db,
+            report_type=report_type,
+            from_date=from_date,
+            to_date=to_date,
+            client_id=client_id,
+            driver_id=driver_id,
+            status=normalized_status,
+            payment_method=payment_method,
+            include_cancelled=include_cancelled
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+    log_action(
+        db=db,
+        user_id=user.id,
+        action="EXPORT_EXCEL_REPORT",
+        entity_type="Report",
+        details=(
+            f"type={report_type} | from={from_date or 'all'} | to={to_date or 'all'} | "
+            f"client_id={client_id or 'all'} | driver_id={driver_id or 'all'} | "
+            f"status={normalized_status or 'all'} | payment_method={payment_method or 'all'} | "
+            f"include_cancelled={include_cancelled} | invoices={meta['invoices_count']} | "
+            f"trips={meta['trips_count']} | payments={meta['payments_count']}"
+        )
+    )
+
+    return StreamingResponse(
+        BytesIO(file_bytes),
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={
+            "Content-Disposition": f'attachment; filename=\"{filename}\"'
+        }
+    )
 
 
 def _to_money(value: float | int | None) -> float:
@@ -1047,3 +1115,4 @@ def get_invoice_detail(
         "items": items,
         "payments": payments
     }
+
