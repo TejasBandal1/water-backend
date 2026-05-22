@@ -1,8 +1,9 @@
 from __future__ import annotations
 
-from datetime import date, datetime, time
+from datetime import date, datetime, time, timezone
 from io import BytesIO
 from typing import Literal
+from zoneinfo import ZoneInfo
 
 from openpyxl import Workbook
 from openpyxl.styles import Alignment, Font, PatternFill
@@ -17,6 +18,7 @@ from app.models.trip_container import TripContainer
 ExportReportType = Literal["invoices", "billing", "payments", "full"]
 
 ALLOWED_STATUSES = {"draft", "pending", "partial", "overdue", "paid", "cancelled"}
+IST = ZoneInfo("Asia/Kolkata")
 
 
 def _to_money(value: float | int | None) -> float:
@@ -38,8 +40,19 @@ def _to_datetime_range(
     from_date: date | None,
     to_date: date | None
 ) -> tuple[datetime | None, datetime | None]:
-    start_dt = datetime.combine(from_date, time.min) if from_date else None
-    end_dt = datetime.combine(to_date, time.max) if to_date else None
+    # Treat UI dates as IST calendar dates, then convert to UTC for DB filters.
+    # The DB stores UTC timestamps, so this prevents "blank export" for local-day filters.
+    start_dt = None
+    end_dt = None
+
+    if from_date:
+        start_local = datetime.combine(from_date, time.min).replace(tzinfo=IST)
+        start_dt = start_local.astimezone(timezone.utc).replace(tzinfo=None)
+
+    if to_date:
+        end_local = datetime.combine(to_date, time.max).replace(tzinfo=IST)
+        end_dt = end_local.astimezone(timezone.utc).replace(tzinfo=None)
+
     return start_dt, end_dt
 
 
