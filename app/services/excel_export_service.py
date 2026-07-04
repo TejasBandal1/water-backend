@@ -25,6 +25,19 @@ def _to_money(value: float | int | None) -> float:
     return round(float(value or 0), 2)
 
 
+def _to_ist_datetime(value: datetime | None) -> datetime | None:
+    """Convert a naive UTC database timestamp to an Excel-safe IST datetime."""
+    if value is None:
+        return None
+
+    utc_value = value.replace(tzinfo=timezone.utc) if value.tzinfo is None else value
+    return utc_value.astimezone(IST).replace(tzinfo=None)
+
+
+def _client_sort_key(name: str | None, client_id: int | None) -> tuple[str, int]:
+    return ((name or "").strip().casefold(), int(client_id or 0))
+
+
 def _resolved_status(invoice: Invoice) -> str:
     if (
         invoice.status == "pending"
@@ -69,8 +82,60 @@ def _write_sheet(ws, headers: list[str], rows: list[list]):
         cell.font = header_font
         cell.alignment = Alignment(horizontal="center", vertical="center")
 
+    ws.sheet_view.showGridLines = False
     ws.freeze_panes = "A2"
     ws.auto_filter.ref = ws.dimensions
+
+    money_keywords = ("amount", "price", "line total", "billed total", "invoice total")
+    integer_keywords = ("count", "quantity", "qty", "jars", "delivered", "returned", "trips")
+
+    for column_index, header in enumerate(headers, start=1):
+        normalized_header = header.casefold()
+        for row_index in range(2, ws.max_row + 1):
+            cell = ws.cell(row=row_index, column=column_index)
+            if any(keyword in normalized_header for keyword in money_keywords):
+                cell.number_format = '₹#,##0.00'
+            elif any(keyword in normalized_header for keyword in integer_keywords):
+                cell.number_format = '#,##0'
+            elif "date" in normalized_header or " at" in normalized_header:
+                cell.number_format = 'yyyy-mm-dd hh:mm'
+
+            if isinstance(cell.value, str) and len(cell.value) > 48:
+                cell.alignment = Alignment(vertical="top", wrap_text=True)
+                ws.row_dimensions[row_index].height = max(
+                    ws.row_dimensions[row_index].height or 15,
+                    30
+                )
+
+    if headers == ["Metric", "Value"]:
+        for row_index in range(2, ws.max_row + 1):
+            metric = str(ws.cell(row=row_index, column=1).value or "").casefold()
+            value_cell = ws.cell(row=row_index, column=2)
+            if "amount" in metric:
+                value_cell.number_format = '₹#,##0.00'
+            elif any(word in metric for word in ("count", "quantity", "delivered", "returned")):
+                value_cell.number_format = '#,##0'
+            elif "generated at" in metric:
+                value_cell.number_format = 'yyyy-mm-dd hh:mm'
+
+    subtotal_fill = PatternFill("solid", fgColor="E2E8F0")
+    grand_total_fill = PatternFill("solid", fgColor="DBEAFE")
+    for row in ws.iter_rows(min_row=2):
+        row_values = [cell.value for cell in row]
+        is_grand_total = any(value == "ALL CLIENTS" for value in row_values)
+        is_client_total = any(
+            isinstance(value, str) and value.endswith(" TOTAL")
+            for value in row_values
+        )
+        if is_grand_total or is_client_total:
+            for cell in row:
+                cell.font = Font(bold=True, color="0F172A")
+                cell.fill = grand_total_fill if is_grand_total else subtotal_fill
+
+        for cell in row:
+            if isinstance(cell.value, str) and cell.value.startswith("CHECK"):
+                cell.font = Font(bold=True, color="991B1B")
+                cell.fill = PatternFill("solid", fgColor="FEE2E2")
 
     for col_cells in ws.columns:
         max_len = 0
@@ -137,14 +202,22 @@ def _build_invoices_data(
             invoice.client.name if invoice.client else None,
             ", ".join(driver_names) if driver_names else None,
             _resolved_status(invoice),
-            invoice.created_at.isoformat() if invoice.created_at else None,
-            invoice.due_date.isoformat() if invoice.due_date else None,
-            invoice.confirmed_at.isoformat() if invoice.confirmed_at else None,
+            _to_ist_datetime(invoice.created_at),
+            _to_ist_datetime(invoice.due_date),
+            _to_ist_datetime(invoice.confirmed_at),
             total_amount,
             amount_paid,
             outstanding,
             len(invoice.trips or [])
         ])
+
+    invoice_rows.sort(
+        key=lambda row: (
+            *_client_sort_key(row[2], row[1]),
+            row[5] or datetime.min,
+            row[0]
+        )
+    )
 
     invoice_ids = [invoice.id for invoice in invoices]
     invoice_item_rows: list[list] = []
@@ -172,6 +245,17 @@ def _build_invoices_data(
                 _to_money(item.price_snapshot),
                 _to_money(item.total)
             ])
+
+    invoice_date_by_id = {row[0]: row[5] for row in invoice_rows}
+    invoice_item_rows.sort(
+        key=lambda row: (
+            *_client_sort_key(row[2], row[1]),
+            invoice_date_by_id.get(row[0]) or datetime.min,
+            row[0],
+            (row[4] or "").strip().casefold(),
+            row[3] or 0
+        )
+    )
 
     return invoices, invoice_rows, invoice_item_rows
 
@@ -247,7 +331,7 @@ def _build_trips_data(
 
         trip_rows.append([
             trip.id,
-            trip.created_at.isoformat() if trip.created_at else None,
+            _to_ist_datetime(trip.created_at),
             trip.client_id,
             trip.client.name if trip.client else None,
             trip.driver_id,
@@ -258,6 +342,14 @@ def _build_trips_data(
             returned_total,
             container_breakdown
         ])
+
+    trip_rows.sort(
+        key=lambda row: (
+            *_client_sort_key(row[3], row[2]),
+            row[1] or datetime.min,
+            row[0]
+        )
+    )
 
     return trip_rows
 
@@ -323,7 +415,7 @@ def _build_payments_data(
 
         payment_rows.append([
             payment.id,
-            payment.created_at.isoformat() if payment.created_at else None,
+            _to_ist_datetime(payment.created_at),
             payment.invoice_id,
             invoice.client_id if invoice else None,
             invoice.client.name if invoice and invoice.client else None,
@@ -335,7 +427,234 @@ def _build_payments_data(
             payment.upi_account
         ])
 
+    payment_rows.sort(
+        key=lambda row: (
+            *_client_sort_key(row[4], row[3]),
+            row[1] or datetime.min,
+            row[0]
+        )
+    )
+
     return payment_rows
+
+
+def _build_client_views(
+    invoice_rows: list[list],
+    invoice_item_rows: list[list],
+    trip_rows: list[list],
+    payment_rows: list[list]
+) -> tuple[list[list], list[list], dict]:
+    """Build user-facing client-grouped rows without changing source records."""
+    clients: dict[int, dict] = {}
+
+    def get_client(client_id: int | None, client_name: str | None) -> dict:
+        key = int(client_id or 0)
+        if key not in clients:
+            clients[key] = {
+                "client_id": client_id,
+                "client_name": (client_name or "Unknown Client").strip(),
+                "invoice_count": 0,
+                "billed_quantity": 0,
+                "billed_amount": 0.0,
+                "paid_amount": 0.0,
+                "outstanding_amount": 0.0,
+                "payments_in_period": 0.0,
+                "trip_count": 0,
+                "delivered_in_period": 0,
+                "returned_in_period": 0,
+                "uninvoiced_delivered": 0,
+                "reconciliation": "N/A"
+            }
+        elif client_name and clients[key]["client_name"] == "Unknown Client":
+            clients[key]["client_name"] = client_name.strip()
+        return clients[key]
+
+    invoice_by_id = {row[0]: row for row in invoice_rows}
+    items_by_invoice: dict[int, list[list]] = {}
+    item_totals_by_invoice: dict[int, float] = {}
+    invoice_line_valid: dict[int, bool] = {}
+
+    for row in invoice_rows:
+        client = get_client(row[1], row[2])
+        client["invoice_count"] += 1
+        client["billed_amount"] = _to_money(client["billed_amount"] + row[8])
+        client["paid_amount"] = _to_money(client["paid_amount"] + row[9])
+        client["outstanding_amount"] = _to_money(
+            client["outstanding_amount"] + row[10]
+        )
+
+    for row in invoice_item_rows:
+        client = get_client(row[1], row[2])
+        client["billed_quantity"] += int(row[5] or 0)
+        items_by_invoice.setdefault(row[0], []).append(row)
+        item_totals_by_invoice[row[0]] = _to_money(
+            item_totals_by_invoice.get(row[0], 0) + row[7]
+        )
+        line_is_valid = _to_money((row[5] or 0) * (row[6] or 0)) == _to_money(row[7])
+        invoice_line_valid[row[0]] = invoice_line_valid.get(row[0], True) and line_is_valid
+
+    for row in trip_rows:
+        client = get_client(row[2], row[3])
+        client["trip_count"] += 1
+        client["delivered_in_period"] += int(row[8] or 0)
+        client["returned_in_period"] += int(row[9] or 0)
+        if row[6] is None:
+            client["uninvoiced_delivered"] += int(row[8] or 0)
+
+    for row in payment_rows:
+        client = get_client(row[3], row[4])
+        client["payments_in_period"] = _to_money(
+            client["payments_in_period"] + row[7]
+        )
+
+    invoice_reconciliation: dict[int, str] = {}
+    for invoice_id, invoice_row in invoice_by_id.items():
+        has_items = bool(items_by_invoice.get(invoice_id))
+        totals_match = _to_money(invoice_row[8]) == _to_money(
+            item_totals_by_invoice.get(invoice_id, 0)
+        )
+        lines_match = invoice_line_valid.get(invoice_id, False)
+        invoice_reconciliation[invoice_id] = (
+            "OK" if has_items and totals_match and lines_match else "CHECK"
+        )
+
+    invoice_ids_by_client: dict[int, list[int]] = {}
+    for invoice_id, row in invoice_by_id.items():
+        invoice_ids_by_client.setdefault(int(row[1] or 0), []).append(invoice_id)
+
+    for key, client in clients.items():
+        client_invoice_ids = invoice_ids_by_client.get(key, [])
+        if client_invoice_ids:
+            client["reconciliation"] = (
+                "OK"
+                if all(invoice_reconciliation[invoice_id] == "OK" for invoice_id in client_invoice_ids)
+                else "CHECK"
+            )
+
+    sorted_clients = sorted(
+        clients.values(),
+        key=lambda client: _client_sort_key(
+            client["client_name"], client["client_id"]
+        )
+    )
+
+    client_summary_rows = [
+        [
+            client["client_id"],
+            client["client_name"],
+            client["invoice_count"],
+            client["billed_quantity"],
+            client["billed_amount"],
+            client["paid_amount"],
+            client["outstanding_amount"],
+            client["payments_in_period"],
+            client["trip_count"],
+            client["delivered_in_period"],
+            client["returned_in_period"],
+            client["uninvoiced_delivered"],
+            client["reconciliation"]
+        ]
+        for client in sorted_clients
+    ]
+
+    if client_summary_rows:
+        client_summary_rows.append([
+            None,
+            "ALL CLIENTS",
+            sum(row[2] for row in client_summary_rows),
+            sum(row[3] for row in client_summary_rows),
+            _to_money(sum(row[4] for row in client_summary_rows)),
+            _to_money(sum(row[5] for row in client_summary_rows)),
+            _to_money(sum(row[6] for row in client_summary_rows)),
+            _to_money(sum(row[7] for row in client_summary_rows)),
+            sum(row[8] for row in client_summary_rows),
+            sum(row[9] for row in client_summary_rows),
+            sum(row[10] for row in client_summary_rows),
+            sum(row[11] for row in client_summary_rows),
+            "OK" if all(row[12] in {"OK", "N/A"} for row in client_summary_rows) else "CHECK"
+        ])
+
+    detail_rows: list[list] = []
+    invoices_by_client: dict[int, list[list]] = {}
+    for row in invoice_rows:
+        invoices_by_client.setdefault(int(row[1] or 0), []).append(row)
+
+    summary_by_client = {
+        int(row[0] or 0): row for row in client_summary_rows if row[0] is not None
+    }
+
+    for client in sorted_clients:
+        key = int(client["client_id"] or 0)
+        client_invoices = invoices_by_client.get(key, [])
+        for invoice_row in client_invoices:
+            invoice_id = invoice_row[0]
+            items = items_by_invoice.get(invoice_id, [])
+            if not items:
+                detail_rows.append([
+                    invoice_row[1], invoice_row[2], invoice_row[5], invoice_id,
+                    invoice_row[4], invoice_row[3], None, None, 0, 0, 0,
+                    invoice_row[8], invoice_row[9], invoice_row[10], invoice_row[11],
+                    "CHECK - NO LINE ITEMS"
+                ])
+                continue
+
+            for item_index, item_row in enumerate(items):
+                line_is_valid = _to_money(item_row[5] * item_row[6]) == _to_money(item_row[7])
+                invoice_is_valid = invoice_reconciliation[invoice_id] == "OK"
+                validation = "OK"
+                if not line_is_valid:
+                    validation = "CHECK - LINE TOTAL"
+                elif not invoice_is_valid:
+                    validation = "CHECK - INVOICE TOTAL"
+
+                first_line = item_index == 0
+                detail_rows.append([
+                    invoice_row[1],
+                    (invoice_row[2] or "Unknown Client").strip(),
+                    invoice_row[5],
+                    invoice_id,
+                    invoice_row[4],
+                    invoice_row[3],
+                    item_row[3],
+                    item_row[4],
+                    item_row[5],
+                    item_row[6],
+                    item_row[7],
+                    invoice_row[8] if first_line else None,
+                    invoice_row[9] if first_line else None,
+                    invoice_row[10] if first_line else None,
+                    invoice_row[11] if first_line else None,
+                    validation
+                ])
+
+        if client_invoices:
+            summary_row = summary_by_client[key]
+            detail_rows.append([
+                client["client_id"],
+                f'{client["client_name"]} TOTAL',
+                None, None, None, None, None, None,
+                summary_row[3],
+                None,
+                summary_row[4],
+                summary_row[4],
+                summary_row[5],
+                summary_row[6],
+                sum(int(row[11] or 0) for row in client_invoices),
+                summary_row[12]
+            ])
+
+    totals = {
+        "billed_quantity": sum(row[3] for row in client_summary_rows if row[1] != "ALL CLIENTS"),
+        "uninvoiced_delivered": sum(
+            row[11] for row in client_summary_rows if row[1] != "ALL CLIENTS"
+        ),
+        "reconciliation": (
+            "OK"
+            if all(row[12] in {"OK", "N/A"} for row in client_summary_rows)
+            else "CHECK"
+        )
+    }
+    return client_summary_rows, detail_rows, totals
 
 
 def build_excel_export(
@@ -386,6 +705,13 @@ def build_excel_export(
         include_cancelled=include_cancelled
     )
 
+    client_summary_rows, client_detail_rows, client_totals = _build_client_views(
+        invoice_rows=invoice_rows,
+        invoice_item_rows=invoice_item_rows,
+        trip_rows=trip_rows,
+        payment_rows=payment_rows
+    )
+
     total_invoiced_amount = _to_money(sum(row[8] for row in invoice_rows))
     total_paid_amount = _to_money(sum(row[9] for row in invoice_rows))
     total_outstanding_amount = _to_money(sum(row[10] for row in invoice_rows))
@@ -399,10 +725,15 @@ def build_excel_export(
 
     summary_headers = ["Metric", "Value"]
     summary_rows = [
-        ["Generated At (UTC)", datetime.utcnow().isoformat()],
+        ["Generated At (IST)", _to_ist_datetime(datetime.utcnow())],
         ["Report Type", report_type],
         ["From Date", from_date.isoformat() if from_date else "All"],
         ["To Date", to_date.isoformat() if to_date else "All"],
+        ["Timezone", "Asia/Kolkata (IST)"],
+        [
+            "Date Filter Rules",
+            "Invoices by invoice date; trips by delivery date; payments by payment date"
+        ],
         ["Client ID", client_id if client_id else "All"],
         ["Driver ID", driver_id if driver_id else "All"],
         ["Invoice Status Filter", normalized_status or "All"],
@@ -416,10 +747,61 @@ def build_excel_export(
         ["Total Invoice Paid Amount", total_paid_amount],
         ["Total Invoice Outstanding", total_outstanding_amount],
         ["Total Payments Amount", total_payment_amount],
-        ["Total Delivered Jars", total_delivered_jars],
-        ["Total Returned Jars", total_returned_jars],
+        ["Total Billed Container Quantity", client_totals["billed_quantity"]],
+        ["Total Delivered During Period", total_delivered_jars],
+        ["Total Returned During Period", total_returned_jars],
+        ["Total Uninvoiced Delivered During Period", client_totals["uninvoiced_delivered"]],
+        ["Invoice Reconciliation", client_totals["reconciliation"]],
     ]
     _write_sheet(summary_ws, summary_headers, summary_rows)
+
+    client_summary_ws = wb.create_sheet("Client_Summary")
+    _write_sheet(
+        client_summary_ws,
+        [
+            "Client ID",
+            "Client Name",
+            "Invoice Count",
+            "Billed Container Quantity",
+            "Billed Amount",
+            "Invoice Paid Amount",
+            "Outstanding Amount",
+            "Payments Amount Recorded During Period",
+            "Trips During Period",
+            "Delivered During Period",
+            "Returned During Period",
+            "Uninvoiced Delivered During Period",
+            "Reconciliation"
+        ],
+        client_summary_rows
+    )
+    client_summary_ws.freeze_panes = "C2"
+
+    if report_type in {"invoices", "full"}:
+        client_details_ws = wb.create_sheet("Client_Details")
+        _write_sheet(
+            client_details_ws,
+            [
+                "Client ID",
+                "Client Name",
+                "Invoice Date (IST)",
+                "Invoice ID",
+                "Status",
+                "Driver Name(s)",
+                "Container ID",
+                "Container Name",
+                "Quantity",
+                "Unit Price",
+                "Line Total",
+                "Invoice Total",
+                "Amount Paid",
+                "Outstanding Amount",
+                "Trip Count",
+                "Validation"
+            ],
+            client_detail_rows
+        )
+        client_details_ws.freeze_panes = "C2"
 
     if report_type in {"invoices", "full"}:
         invoices_ws = wb.create_sheet("Invoices")
@@ -431,9 +813,9 @@ def build_excel_export(
                 "Client Name",
                 "Driver Name(s)",
                 "Status",
-                "Created At (UTC)",
-                "Due Date (UTC)",
-                "Confirmed At (UTC)",
+                "Created At (IST)",
+                "Due Date (IST)",
+                "Confirmed At (IST)",
                 "Total Amount",
                 "Amount Paid",
                 "Outstanding Amount",
@@ -464,7 +846,7 @@ def build_excel_export(
             trips_ws,
             [
                 "Trip ID",
-                "Trip DateTime (UTC)",
+                "Trip DateTime (IST)",
                 "Client ID",
                 "Client Name",
                 "Driver ID",
@@ -484,7 +866,7 @@ def build_excel_export(
             payments_ws,
             [
                 "Payment ID",
-                "Payment DateTime (UTC)",
+                "Payment DateTime (IST)",
                 "Invoice ID",
                 "Client ID",
                 "Client Name",
@@ -502,7 +884,7 @@ def build_excel_export(
     wb.save(output)
     output.seek(0)
 
-    exported_at = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+    exported_at = datetime.now(IST).strftime("%Y%m%d_%H%M%S")
     filename = f"rivarich_{report_type}_export_{exported_at}.xlsx"
 
     export_meta = {
@@ -512,7 +894,8 @@ def build_excel_export(
         "payments_count": len(payment_rows),
         "total_invoiced": total_invoiced_amount,
         "total_outstanding": total_outstanding_amount,
-        "total_payments": total_payment_amount
+        "total_payments": total_payment_amount,
+        "reconciliation": client_totals["reconciliation"]
     }
 
     return output.getvalue(), filename, export_meta
